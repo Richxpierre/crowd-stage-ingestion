@@ -1,0 +1,6 @@
+# Supabase Edge Function authentication is verified in each function using getUser(jwt).
+# Leave JWT gateway verification enabled for authenticated app sessions.
+[functions.ingestion-status]
+verify_jwt = true
+[functions.ingestion-review]
+verify_jwt = true

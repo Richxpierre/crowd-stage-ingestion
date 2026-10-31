@@ -1,0 +1,10 @@
+{
+  "defaults": {
+    "user_agent": "ConferenceURLCatalog/1.0 (+mailto:contact@example.org)",
+    "timeout_seconds": 30,
+    "min_delay_seconds": 2.0,
+    "max_sitemaps_per_source": 100,
+    "max_urls_per_source": 50000
+  },
+  "sources": []
+}
