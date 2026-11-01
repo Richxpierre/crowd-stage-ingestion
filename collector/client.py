@@ -62,3 +62,24 @@ class Client:
         return self.request('POST', 'conference_url_candidates', params={'on_conflict':'url'},
             json=rows, headers={'Prefer':'resolution=ignore-duplicates,return=minimal'})
 
+    def claim_crawl_job(self):
+        return self.request('POST','rpc/claim_conference_crawl',json={})
+
+    def crawl_job(self, job_id):
+        rows=self.request('GET','conference_crawl_jobs',params={'id':'eq.'+job_id,'select':'id,status,cancel_requested'})
+        return rows[0] if rows else None
+
+    def update_crawl_job(self, job_id, record):
+        return self.request('PATCH','conference_crawl_jobs',params={'id':'eq.'+job_id,'status':'eq.running'},json=record)
+
+    def recent_crawled_pages(self, target_id):
+        from datetime import timedelta
+        since=(datetime.now(timezone.utc)-timedelta(days=7)).isoformat()
+        rows=self.request('GET','conference_crawl_jobs',params={'target_id':'eq.'+target_id,'select':'visited_urls',
+            'completed_at':'gte.'+since,'order':'completed_at.desc','limit':'50'})
+        return {url for row in rows for url in row.get('visited_urls',[])}
+
+    def record_discovery(self, job_id, listing, official, status, title, start, end, evidence, reason):
+        return self.request('POST','rpc/record_conference_discovery',json={'p_job_id':job_id,'p_listing_url':listing,
+            'p_official_url':official,'p_status':status,'p_title':title,'p_start':start,'p_end':end,'p_evidence':evidence,'p_reason':reason})
+
