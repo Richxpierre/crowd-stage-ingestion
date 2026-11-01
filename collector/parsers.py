@@ -226,9 +226,14 @@ def parse_jsonld(body: bytes, source: dict, page_url: str | None = None) -> list
                 source_url=page_url,
             )
             # Prefer @id; otherwise keep annual editions distinct even on evergreen pages.
-            stable_id = plain(node.get("@id"), 500) or f"{event_url}|{start[:4]}|{title.lower()}"
+            # One dedicated official event page per annual edition keeps its identity
+            # when the organizer corrects a title or shifts dates within that year.
+            fallback_id = (f"{event_url}|{start[:4]}" if source.get("selectors", {}).get("single_event")
+                           else f"{event_url}|{start[:4]}|{title.lower()}")
+            stable_id = plain(node.get("@id"), 500) or fallback_id
             try:
                 records.append(_finish(rec, source["publisher"], stable_id))
             except ValueError:
                 continue
     return records
+

@@ -27,7 +27,8 @@ class Client:
     def sources(self, slug=None):
         params = {
             'select': '*', 'is_active': 'eq.true', 'is_official_source': 'eq.true',
-            'ingestion_allowed': 'eq.true', 'order': 'next_check_at.asc', 'limit': '1000'
+            'ingestion_allowed': 'eq.true', 'record_scope':'eq.conference',
+            'order': 'next_check_at.asc', 'limit': '1000'
         }
         if slug:
             params['slug'] = 'eq.' + slug  # manual runs can force a not-yet-due source
@@ -54,3 +55,4 @@ class Client:
     def upsert_candidates(self, rows):
         return self.request('POST', 'conference_url_candidates', params={'on_conflict':'url'},
             json=rows, headers={'Prefer':'resolution=ignore-duplicates,return=minimal'})
+

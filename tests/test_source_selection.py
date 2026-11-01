@@ -20,6 +20,7 @@ class SourceSelectionTests(unittest.TestCase):
         params = request.call_args.kwargs['params']
         self.assertTrue(params['next_check_at'].startswith('lte.'))
         self.assertEqual(params['order'], 'next_check_at.asc')
+        self.assertEqual(params['record_scope'], 'eq.conference')
         for gate in ('is_active', 'is_official_source', 'ingestion_allowed'):
             self.assertEqual(params[gate], 'eq.true')
 

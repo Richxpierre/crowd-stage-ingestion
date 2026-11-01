@@ -14,7 +14,6 @@ from .client import Client
 from .fetch import Fetcher
 from .official import parse_official_html
 from .parsers import parse_ics, parse_jsonld
-from .rss_parser import parse_rss
 
 LOG = logging.getLogger('crowdstage-ingestion')
 BLOCKED_DIRECTORY_HOSTS = {'conferencegrid.com','sessionize.com'}
@@ -41,6 +40,10 @@ def sync_one(db, source):
     try:
         if not source.get('is_official_source') or not source.get('ingestion_allowed') or not source.get('permission_reviewed_at') or len(str(source.get('permission_basis') or '').strip()) < 8:
             raise PermissionError('Only reviewed, approved, organizer-hosted direct sources may be refreshed')
+        if source.get('record_scope') != 'conference':
+            raise PermissionError('Source must be verified as a conference or conference catalog, not news or sessions')
+        if '/schedule/' in urlsplit(source['url']).path:
+            raise ValueError('Session schedules must not be imported as conferences')
         if is_directory_target(source['url']):
             raise PermissionError('Sessionize and ConferenceGrid are discovery sources, not recurring refresh targets')
         if source.get('kind') not in ('ics','jsonld','official_html'):
@@ -56,9 +59,15 @@ def sync_one(db, source):
         kind = source['kind']
         records = (parse_ics(body, source) if kind == 'ics'
                    else parse_official_html(body, source) if kind == 'official_html'
-                   else parse_jsonld(body, source) or parse_rss(body, source))
+                   else parse_jsonld(body, source))
         if not records:
             raise ValueError('No valid Event records parsed; retaining prior events')
+        # Historical calendars must not refill the site with expired sessions/events.
+        # Keep cancellation observations so existing listings can still be archived.
+        current_date = datetime.now(timezone.utc).date().isoformat()
+        current_records = [r for r in records if r['end_date'] >= current_date or r.get('status') == 'cancelled']
+        counts['skipped_count'] = len(records) - len(current_records)
+        records = current_records
         # Same feed UID/record ID is a single source observation.
         records = list({r['source_record_id']:r for r in records}.values())
         counts['fetched_count'] = len(records)
@@ -69,7 +78,7 @@ def sync_one(db, source):
         db.update_source(sid, {'etag':headers.get('ETag'), 'last_modified':headers.get('Last-Modified'),
                               'last_success_at':utc_now(), 'last_attempt_at':utc_now(),
                               'next_check_at':next_check(source),'last_error':None})
-        db.update_run(run_id, {**counts, 'status':'success','http_status':code,'completed_at':utc_now()})
+        db.update_run(run_id, {**counts, 'status':'success' if records else 'unchanged','http_status':code,'completed_at':utc_now()})
         return counts
     except Exception as exc:
         LOG.exception('Source %s failed',source.get('slug'))
@@ -100,3 +109,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

@@ -7,6 +7,7 @@ from scripts.import_url_candidates import candidates
 
 FIXTURE = Path(__file__).parent / 'fixtures'
 SOURCE = dict(id='s-01',slug='approved',publisher='official.org',kind='ics',
+    record_scope='conference',
     url='https://official.org/conferences.ics',is_official_source=True,
     ingestion_allowed=True,permission_reviewed_at='2026-10-30T00:00:00Z',
     permission_basis='Approved collection of organizer calendar')
@@ -76,3 +77,4 @@ class DiscoveryTests(unittest.TestCase):
         body=b'<h1>Conference 2027</h1><time datetime="2027-05-11">May</time><a class="register" href="/tickets">Register</a>'
         event=parse_official_html(body,src)[0]
         self.assertEqual(event['registration_url'],'https://official.org/tickets')
+
