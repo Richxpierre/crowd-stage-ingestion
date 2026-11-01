@@ -68,3 +68,19 @@ Automatic mode tries JSON-LD Event data, schema.org microdata, linked ICS calend
 Every discovery records its source page, method and supporting evidence. The admin sees pages checked, candidate count and errors. Missing dates produce no event; unknown prices, formats and location fields are not invented. English month-name dates and ISO dates are supported; unfamiliar languages/layouts, external-only widget data, login walls and robots restrictions may need a specific page URL or manual selectors in Settings. No generic parser can guarantee extraction from every website.
 
 The scheduled workflow checks due sources every 15 minutes after this branch is merged to main; GitHub may delay scheduled jobs. Each source retains its own refresh interval (24 hours by default, configurable from 6 to 720). This replaces the previous six-hour queue poll and does not add another collector or Supabase cron. Manual workflow dispatch can process a queued source sooner. Never re-enable the retired website collectors.
+
+## Event images
+
+Collectors retain HTTPS image links and provenance without downloading image files. Selection prioritizes an optional `cover_image` CSS override, schema.org Event images, an edition’s own card image, Open Graph/Twitter images, then a relevant wide hero/banner image. Calendar IMAGE and image ATTACH fields are supported; missing artwork may be found on bounded same-website event-page lookups. Automatic catalogs prefer the dedicated event page’s image over a generic catalog share image. Small icons, logos and sponsor graphics are excluded from heuristic banner selection.
+
+Apply the companion website image-persistence migration before enabling this collector version. On the next eligible refresh, older sources bypass their image-less HTTP cache once. Image changes affect the source content hash, retain event identity, and never auto-publish an event. Original page URLs and extraction methods remain in observations for review.
+
+## Broken feed recovery
+
+If a feed or configured page errors, is malformed or yields no usable Event records, the worker tries automatic discovery on the organizer website. It keeps the registered URL and parser, records the primary error and each recovery attempt in discovery_report, and probes the original source again on later runs. Recovered sources are retried after six hours; the scheduler checks due sources every 15 minutes. Failed recovery retains existing events and reports Needs attention. Source and per-run time budgets keep broken sites from monopolizing scheduled runs.
+
+The default fallback strips the feed path to its existing HTTPS origin. Common feed subdomains can also fall back to their parent website using an offline Public Suffix List, including private hosting tenant boundaries. Domains are not guessed by swapping .org, .com or .net. RSS/Atom feeds can provide explicit Event data or links to actual event pages; publication timestamps are never conference dates.
+
+Advanced source JSON may set website_fallback=false, fallback_url to an explicitly selected organizer website, and fallback_selectors for that website. Robots and public-network checks apply to every fallback URL. A robots-disallowed feed path can recover through a separately permitted homepage; unavailable/denied robots policy, unsafe destinations and HTTP 429 stop collection for cooldown.
+
+Recovery reconciles feed and website observations within the same source before ingestion so known editions retain their IDs. Ambiguous matches require admin review. The dashboard labels successful recovery Using website fallback and retains failed attempts for troubleshooting.

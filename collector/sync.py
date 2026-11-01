@@ -7,14 +7,15 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 from .client import Client
 from .fetch import Fetcher
-from .official import parse_official_html
-from .parsers import parse_ics, parse_jsonld, _finish, clean_url
-from .automatic import collect_automatic
+from .parsers import _finish, clean_url
+from .images import enrich_missing_images
+from .recovery import collect_source,reconcile_identities
 
 LOG = logging.getLogger('crowdstage-ingestion')
 BLOCKED_DIRECTORY_HOSTS = {'conferencegrid.com','sessionize.com'}
@@ -58,6 +59,7 @@ def sync_one(db, source):
     sid = source['id']
     counts = {'fetched_count':0,'created_count':0,'updated_count':0,'unchanged_count':0,'skipped_count':0}
     run_id = db.create_run(sid)
+    report = None
     try:
         if not source.get('is_official_source') or not source.get('ingestion_allowed') or not source.get('permission_reviewed_at') or len(str(source.get('permission_basis') or '').strip()) < 8:
             raise PermissionError('Only reviewed, approved, organizer-hosted direct sources may be refreshed')
@@ -71,50 +73,49 @@ def sync_one(db, source):
             raise ValueError('Unsupported direct URL kind')
         fetcher = Fetcher(os.environ.get('COLLECTOR_USER_AGENT',''),
                           min_delay_seconds=source.get('min_delay_seconds',2))
-        if source['kind'] == 'auto':
-            records, report = collect_automatic(fetcher, source)
-            db.update_source(sid, {'discovery_report':report})
-            code, body, headers = 200, b'', {}
-        else:
-            code, body, headers = fetcher.fetch(source['url'], source.get('etag'), source.get('last_modified'))
+        records,code,headers,report=collect_source(fetcher,source)
         if code == 304:
             db.update_source(sid, {'last_success_at':utc_now(),'last_attempt_at':utc_now(),
                                    'last_error':None,'next_check_at':next_check(source)})
             db.update_run(run_id, {'status':'unchanged','completed_at':utc_now(),'http_status':304})
             return counts
-        kind = source['kind']
-        if kind != 'auto':
-            records = (parse_ics(body, source) if kind == 'ics'
-                       else parse_official_html(body, source) if kind == 'official_html'
-                       else parse_jsonld(body, source))
-        if not records:
-            detail = (report['errors'][0]['message'] if kind == 'auto' and report['errors'] else
-                      'No explicit conference title, date and location found. Add an event page URL or advanced selectors.')
-            raise ValueError(f'No valid Event records. Needs attention: {detail}; prior events retained')
+        recovered=report.get('mode')=='website_fallback'
         # Historical calendars must not refill the site with expired sessions/events.
         # Keep cancellation observations so existing listings can still be archived.
         current_date = datetime.now(timezone.utc).date().isoformat()
         current_records = [r for r in records if r['end_date'] >= current_date or r.get('status') == 'cancelled']
         counts['skipped_count'] = len(records) - len(current_records)
         records = current_records
+        if source['kind'] != 'auto' and not recovered:
+            fetcher.deadline=min(getattr(fetcher,'deadline',None) or float('inf'),time.monotonic()+60)
+            records=enrich_missing_images(fetcher,source,records)
         # Same feed UID/record ID is a single source observation.
         records = list({r['source_record_id']:r for r in records}.values())
+        if recovered or (source.get('discovery_report') or {}).get('mode')=='website_fallback':
+            records=reconcile_identities(db,source,records)
         records = preserve_existing_identity(db, source, records)
         counts['fetched_count'] = len(records)
+        image_report=report
+        image_report.update(image_extraction_version=1,images_found=sum(bool(r.get('cover_url')) for r in records))
         for i in range(0,len(records),100):
             batch = db.ingest(sid, records[i:i+100])
             for key in ('created','updated','unchanged','skipped'):
                 counts[key+'_count'] += int(batch.get(key,0))
         db.update_source(sid, {'etag':headers.get('ETag'), 'last_modified':headers.get('Last-Modified'),
+                              'discovery_report':image_report,
                               'last_success_at':utc_now(), 'last_attempt_at':utc_now(),
-                              'next_check_at':next_check(source),'last_error':None})
+                              'next_check_at':next_check(source,6 if recovered else None),'last_error':None})
+        if recovered:
+            LOG.warning('Source %s recovered with automatic website discovery at %s; primary feed/page will be retried',source.get('slug'),report['fallback_url'])
         db.update_run(run_id, {**counts, 'status':'success' if records else 'unchanged','http_status':code,'completed_at':utc_now()})
         return counts
     except Exception as exc:
         LOG.exception('Source %s failed',source.get('slug'))
         db.update_run(run_id,{**counts,'status':'failed','completed_at':utc_now(),'error_message':str(exc)[:750]})
-        db.update_source(sid,{'last_attempt_at':utc_now(), 'last_error':str(exc)[:750],
-                              'next_check_at':next_check(source,6)})
+        failed={'last_attempt_at':utc_now(), 'last_error':str(exc)[:750],'next_check_at':next_check(source,6)}
+        failure_report=getattr(exc,'report',None) or report
+        if failure_report is not None:failed['discovery_report']=failure_report
+        db.update_source(sid,failed)
         raise
 
 
@@ -128,7 +129,11 @@ def main():
     sources = db.sources(slug=args.slug)[:max(0,args.limit_sources)]
     LOG.info('%d direct sources selected',len(sources))
     failures = 0
-    for s in sources:
+    run_deadline=time.monotonic()+max(150,min(int(os.environ.get('MAX_RUN_SECONDS','600')),1800))
+    for index,s in enumerate(sources):
+        if time.monotonic()>=run_deadline:
+            LOG.warning('Run time budget reached; %d due sources deferred to the next scheduled run',len(sources)-index)
+            break
         try:
             LOG.info('%s %s',s['slug'],json.dumps(sync_one(db,s)))
         except Exception:
