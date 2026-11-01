@@ -14,6 +14,7 @@ from .client import Client
 from .fetch import Fetcher
 from .official import parse_official_html
 from .parsers import parse_ics, parse_jsonld
+from .rss_parser import parse_rss
 
 LOG = logging.getLogger('crowdstage-ingestion')
 BLOCKED_DIRECTORY_HOSTS = {'conferencegrid.com','sessionize.com'}
@@ -54,8 +55,8 @@ def sync_one(db, source):
             return counts
         kind = source['kind']
         records = (parse_ics(body, source) if kind == 'ics'
-                   else parse_jsonld(body, source) if kind == 'jsonld'
-                   else parse_official_html(body, source))
+                   else parse_official_html(body, source) if kind == 'official_html'
+                   else parse_jsonld(body, source) or parse_rss(body, source))
         if not records:
             raise ValueError('No valid Event records parsed; retaining prior events')
         # Same feed UID/record ID is a single source observation.
