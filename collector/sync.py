@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 from .client import Client
 from .fetch import Fetcher
 from .official import parse_official_html
-from .parsers import parse_ics, parse_jsonld
+from .parsers import parse_ics, parse_jsonld, _finish, clean_url
 
 LOG = logging.getLogger('crowdstage-ingestion')
 BLOCKED_DIRECTORY_HOSTS = {'conferencegrid.com','sessionize.com'}
@@ -31,6 +31,26 @@ def next_check(source, hours_override=None):
 def is_directory_target(url):
     host = (urlsplit(url).hostname or '').lower().removeprefix('www.')
     return any(host == blocked or host.endswith('.' + blocked) for blocked in BLOCKED_DIRECTORY_HOSTS)
+
+
+def preserve_existing_identity(db, source, records):
+    """Keep the original UUID when an existing dedicated event page is renamed.
+
+    This also adopts identities written by the older title-based parser, avoiding
+    duplicate records when a source upgrades to the new parser.
+    """
+    if len(records) != 1 or not source.get('selectors', {}).get('single_event'):
+        return records
+    record = records[0]
+    matches = [obs for obs in db.observations(source['id'])
+               if clean_url(obs['payload'].get('event_url')) == clean_url(record.get('event_url'))
+               and str(obs['payload'].get('start_date',''))[:4] == record['start_date'][:4]]
+    identities = {obs['source_record_id'] for obs in matches}
+    if len(identities) > 1:
+        raise ValueError('Ambiguous event identities on a dedicated source; review duplicates first')
+    if identities:
+        return [_finish(record, source['publisher'], identities.pop())]
+    return records
 
 
 def sync_one(db, source):
@@ -70,6 +90,7 @@ def sync_one(db, source):
         records = current_records
         # Same feed UID/record ID is a single source observation.
         records = list({r['source_record_id']:r for r in records}.values())
+        records = preserve_existing_identity(db, source, records)
         counts['fetched_count'] = len(records)
         for i in range(0,len(records),100):
             batch = db.ingest(sid, records[i:i+100])

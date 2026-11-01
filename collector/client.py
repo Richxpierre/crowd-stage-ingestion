@@ -41,6 +41,12 @@ class Client:
             'source_id': source_id, 'status': 'running'
         }, headers={'Prefer':'return=representation'})[0]['id']
 
+    def observations(self, source_id):
+        return self.request('GET', 'conference_event_observations', params={
+            'select':'source_record_id,payload', 'source_id':'eq.'+source_id,
+            'order':'last_seen_at.desc', 'limit':'100'
+        })
+
     def update_run(self, run_id, record):
         self.request('PATCH', 'conference_ingestion_runs', params={'id':'eq.'+run_id}, json=record)
 

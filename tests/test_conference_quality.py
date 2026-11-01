@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import patch
 from collector.parsers import parse_jsonld
-from collector.sync import sync_one
+from collector.sync import sync_one, preserve_existing_identity
 from test_ingestion import FakeDB, SOURCE
 
 class ConferenceQualityTests(unittest.TestCase):
@@ -50,3 +50,14 @@ class ConferenceQualityTests(unittest.TestCase):
         body=("<script type='application/ld+json'>"+json.dumps(events)+"</script>").encode()
         rows=parse_jsonld(body,source)
         self.assertEqual(len({r["dedupe_key"] for r in rows}),2)
+
+    def test_existing_title_based_identity_is_adopted(self):
+        source={**SOURCE,"selectors":{"single_event":True}}
+        payload={"title":"Renamed","start_date":"2027-06-01","end_date":"2027-06-02",
+                 "event_url":"https://official.org/event"}
+        class DB:
+            def observations(self, source_id):
+                return [{"source_record_id":"legacy-title-id","payload":{
+                    "event_url":"https://official.org/event","start_date":"2027-05-30"}}]
+        record=preserve_existing_identity(DB(),source,[payload])[0]
+        self.assertEqual(record["source_record_id"],"legacy-title-id")
