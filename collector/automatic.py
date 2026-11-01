@@ -177,12 +177,13 @@ def parse_dated_heading(body,source,url):
     Do not require address markup or infer a location from unstructured text.
     Deadlines and catalog headings never qualify as event dates.
     """
+    if SKIP_PATH.search(urlsplit(url).path):return []
     soup=BeautifulSoup(body,'html.parser')
     headings=soup.find_all('h1')
     if len(headings)!=1:return []
     title=headings[0].get_text(' ',strip=True)
     dates=date_range(title)
-    if not dates or len(title)>240 or not EVENT_WORD.search(title) or re.search(r'deadline|submission|call for|early.?bird|registration|calendar|directory|upcoming events',title,re.I):return []
+    if not dates or len(title)>240 or not EVENT_WORD.search(title) or re.search(r'deadline|submission|call for|early.?bird|registration|calendar|directory|upcoming events|cancelled|canceled',title,re.I):return []
     record=dict(title=title,start_date=dates[0],end_date=dates[1],timezone=None,
         venue=None,city=None,country=None,region=None,format='unknown',categories=[],summary=None,
         event_url=url,official_url=url,registration_url=None,cfp_url=None,cfp_deadline=None,

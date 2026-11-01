@@ -69,6 +69,11 @@ class DiscoveryTests(unittest.TestCase):
     def test_deadline_heading_is_not_event_date(self):
         Reader.pages[OFFICIAL]=page(OFFICIAL,'<h1>Cloud Conference submission deadline November 18, 2027</h1>')
         self.assertIsNone(asyncio.run(verify_organizer(Reader(),OFFICIAL)))
+    def test_dated_news_and_cancelled_headings_do_not_create_events(self):
+        from collector.automatic import parse_page
+        source={'url':OFFICIAL,'name':'Cloud Conference','publisher':'organizer.org','selectors':{}}
+        self.assertEqual(parse_page(b'<h1>Cloud Conference, November 18, 2027</h1>',source,OFFICIAL+'news/announcement'),[])
+        self.assertEqual(parse_page(b'<h1>Cancelled Cloud Conference, November 18, 2027</h1>',source,OFFICIAL),[])
     def test_past_and_cancelled_not_verified(self):
         for change in [{'startDate':'2020-01-01','endDate':'2020-01-02'},{'eventStatus':'https://schema.org/EventCancelled'}]:
             Reader.pages[OFFICIAL]=eventpage({**EVENT,**change})
