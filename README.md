@@ -53,3 +53,9 @@ python -m unittest discover -s tests -v
 **No source is enabled automatically.** Production deployment, external-site permissions, and integration with your live application must be verified separately. No Python worker or secret belongs in client-side Netlify code.
 
 
+## Conference-only source validation
+
+Apply the website migration `20261101061416_dynamic_event_discovery.sql` before running this collector. Active sources must have `record_scope=conference`; existing unverified registrations are paused for review. Review the actual event page and its organizer permission before enabling a source. RSS publication dates and session schedule pages are not accepted as conference dates. Past events are skipped; cancellations remain eligible for archival.
+
+For a dedicated page representing one conference edition, set `selectors.single_event=true` to preserve identity if the organizer changes its title. Do not set this on a multi-event catalog. Existing observations retain their original identity across collector upgrades.
+
