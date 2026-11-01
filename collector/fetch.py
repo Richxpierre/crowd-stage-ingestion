@@ -41,7 +41,7 @@ def host_of(url: str) -> str:
 
 
 class Fetcher:
-    def __init__(self, user_agent: str, min_delay_seconds: float = 2.0, timeout: float = 25.0):
+    def __init__(self, user_agent: str, min_delay_seconds: float = 2.0, timeout: float = 25.0, respect_robots: bool = True):
         if not user_agent or "YOUR_EMAIL" in user_agent:
             raise ValueError("Set a real COLLECTOR_USER_AGENT with contact email")
         self.session = requests.Session()
@@ -52,6 +52,7 @@ class Fetcher:
         self.robots: dict[str, RobotFileParser] = {}
         self.last_fetch = LAST_FETCH
         self.deadline = None
+        self.respect_robots = respect_robots
 
     def _timeout(self):
         remaining = self.deadline - time.monotonic() if self.deadline else self.timeout
@@ -99,11 +100,11 @@ class Fetcher:
     def fetch(self, url: str, etag: str | None = None, last_modified: str | None = None, _redirects=0, _root=None):
         self._timeout()
         hostname = host_of(url)
-        policy = self._get_robots(hostname)
+        policy = self._get_robots(hostname) if self.respect_robots else None
         agent = self.session.headers["User-Agent"]
-        if not policy.can_fetch(agent, url):
+        if policy and not policy.can_fetch(agent, url):
             raise RobotsPathDenied(f"robots.txt blocks {url}")
-        delay = max(self.min_delay, float(policy.crawl_delay(agent) or 0))
+        delay = max(self.min_delay, float(policy.crawl_delay(agent) or 0) if policy else 0)
         rate_host = hostname.removeprefix('www.')
         prev = self.last_fetch.get(rate_host, 0)
         if prev and time.monotonic() - prev < delay:
@@ -139,6 +140,9 @@ class Fetcher:
             if response.status_code == 304:
                 response.close()
                 return 304, b"", response.headers
+            if response.status_code in (401,403):
+                provider='; Cloudflare' if 'cloudflare' in response.headers.get('Server','').lower() or response.headers.get('cf-mitigated')=='challenge' else ''
+                raise PermissionError(f'Website access denied (HTTP {response.status_code}{provider}) at {url}. This is a page access block, not a robots.txt rule.')
             response.raise_for_status()
             chunks, size = [], 0
             for chunk in response.iter_content(chunk_size=65536):

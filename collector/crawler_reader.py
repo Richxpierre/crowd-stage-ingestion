@@ -21,9 +21,13 @@ def same_owner(url,base):
 
 
 class Crawl4AIReader:
-    def __init__(self,user_agent,deadline=None,fetcher=None):
+    def __init__(self,user_agent,deadline=None,fetcher=None,skip_robots_for=None):
         self.user_agent=user_agent
-        self.fetcher=fetcher or Fetcher(user_agent,timeout=15,min_delay_seconds=2)
+        self.policy_fetcher=fetcher or Fetcher(user_agent,timeout=15,min_delay_seconds=2)
+        self.direct_fetcher=(Fetcher(user_agent,timeout=15,min_delay_seconds=2,respect_robots=False)
+            if skip_robots_for and not fetcher else self.policy_fetcher)
+        self.skip_robots_for=skip_robots_for
+        self.fetcher=self.policy_fetcher
         self.deadline=deadline or time.monotonic()+360
         self.lock=asyncio.Lock()
         self.current_url=None
@@ -39,6 +43,7 @@ class Crawl4AIReader:
             init_scripts=["if(navigator.serviceWorker){navigator.serviceWorker.register=()=>Promise.reject(new Error('Background workers disabled'));}"])
         self.crawler=AsyncWebCrawler(config=browser,base_directory=os.environ['CRAWL4_AI_BASE_DIRECTORY'])
         self.config=CrawlerRunConfig(cache_mode=CacheMode.BYPASS,page_timeout=25000,
+            check_robots_txt=False,  # Policy belongs to the guarded fetcher, including explicit admin overrides.
             wait_until='domcontentloaded',delay_before_return_html=0.3,word_count_threshold=0,
             exclude_social_media_links=True,keep_data_attributes=True,verbose=False,
             process_iframes=False,magic=False,simulate_user=False,override_navigator=False)
@@ -75,6 +80,7 @@ class Crawl4AIReader:
 
     async def read(self,url):
         if time.monotonic()>=self.deadline:raise TimeoutError('Crawl time budget reached')
+        self.fetcher=(self.direct_fetcher if self.skip_robots_for and same_owner(url,self.skip_robots_for) else self.policy_fetcher)
         self.fetcher.deadline=min(self.deadline,time.monotonic()+50)
         self.fetcher.timeout=15
         self.initial=await asyncio.to_thread(self.fetcher.fetch,url)
