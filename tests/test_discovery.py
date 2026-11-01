@@ -103,6 +103,22 @@ class DiscoveryTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('RUN_CRAWLER_TESTS')=='1','Requires Crawl4AI and Chromium')
 class Crawl4AIIntegrationTests(unittest.TestCase):
+    def test_direct_browser_mode_extracts_without_http_prefetch(self):
+        body=('<html><head><title>Conference directory</title></head><body><h1>Upcoming conferences</h1><p>'+('Browse public conference listings and official organizer websites. '*40)+'</p><script>document.body.insertAdjacentHTML("beforeend",\'<a href="https://organizer.org/">Official website</a>\');fetch("https://foreign.org/private");</script></body></html>')
+        class FixtureReader(Crawl4AIReader):
+            async def _guard_context(self,page,context,**kwargs):
+                await super()._guard_context(page,context,**kwargs)
+                await context.route(SEED,lambda route:route.fulfill(status=200,body=body,content_type='text/html'))
+        async def run():
+            async with FixtureReader('CrowdStage test',skip_robots_for=SEED) as reader:
+                reader.policy_fetcher.fetch=lambda *args: (_ for _ in ()).throw(AssertionError('HTTP prefetch ran'))
+                reader.direct_fetcher.fetch=reader.policy_fetcher.fetch
+                return await reader.read(SEED)
+        from unittest.mock import patch
+        with patch('collector.crawler_reader.host_of',return_value='directory.org'):
+            result=asyncio.run(run())
+        self.assertEqual([x['url'] for x in classify_links(result,SEED,{})[1]],[OFFICIAL])
+
     def test_real_sdk_extracts_rendered_links_and_blocks_foreign_requests(self):
         body=('''<html><head><title>Conference directory</title></head><body><h1>Upcoming conferences</h1><p>'''+
             'Explore upcoming technology conferences and trade shows with their official organizer websites. '*30+

@@ -51,7 +51,7 @@ def page_links(page):
         for _ in range(2):
             if parent is None:break
             context=parent.get_text(' ',strip=True)
-            if len(context)<400 and re.search(r'website|homepage',context,re.I):label+=' '+context
+            if len(context)<400 and (re.search(r'website|homepage',context,re.I) or EVENT_HINT.search(context)):label+=' '+context
             parent=parent.parent
         links.append({'href':urljoin(url,target),'text':label})
     for label,urlmatch in re.findall(r'(?<!!)\[([^\]]+)\]\((https://[^\s\)]+)\)',page.get('markdown','')):

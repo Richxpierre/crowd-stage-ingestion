@@ -5,7 +5,7 @@ import os
 import tempfile
 import time
 from urllib.parse import urlsplit
-from .fetch import Fetcher
+from .fetch import Fetcher,host_of
 from .parsers import clean_url
 from .recovery import EXTRACT
 
@@ -33,6 +33,11 @@ class Crawl4AIReader:
         self.current_url=None
         self.initial=None
         self.requests=0
+        self.browser_direct=False
+        self.direct_error=None
+        self.direct_bytes=0
+        self.response_tasks=[]
+        self.active_direct_page=None
 
     async def __aenter__(self):
         os.environ.setdefault('CRAWL4_AI_BASE_DIRECTORY',os.path.join(tempfile.gettempdir(),'crowdstage-crawler'))
@@ -55,9 +60,12 @@ class Crawl4AIReader:
         await self.crawler.close()
 
     async def _guard_context(self,page,context,**kwargs):
+        if self.browser_direct:self.active_direct_page=page
         await context.route_web_socket('**/*',lambda ws:ws.close())
         async def route_request(route):
             request=route.request
+            if self.browser_direct:
+                return await self._direct_request(route,page)
             if (request.method!='GET' or not same_owner(request.url,self.current_url) or self.requests>=12
                 or request.resource_type in ('image','media','font') or
                 (request.is_navigation_request() and clean_url(request.url)!=clean_url(self.current_url))):
@@ -75,25 +83,78 @@ class Crawl4AIReader:
                 except Exception:return await route.abort()
             await route.fulfill(status=code,body=body,content_type=headers.get('Content-Type',headers.get('content-type','text/html')))
         await context.route('**/*',route_request)
+        def response_received(response):
+            if self.browser_direct and page==self.active_direct_page:
+                self.response_tasks.append(asyncio.create_task(self._direct_response(response,page)))
+        page.on('response',response_received)
         page.on('popup',lambda popup:asyncio.create_task(popup.close()))
         return page
+
+    async def _direct_request(self,route,page):
+        request=route.request
+        target=urlsplit(request.url)
+        own=same_owner(request.url,self.current_url)
+        verification=(target.scheme=='https' and target.hostname=='challenges.cloudflare.com' and target.port in (None,443) and not target.username)
+        challenge_post=request.method=='POST' and (verification or own and target.path.startswith('/cdn-cgi/challenge-platform/'))
+        if (not(own or verification) or request.method!='GET' and not challenge_post or self.requests>=32
+            or time.monotonic()>=self.resource_deadline or request.resource_type in ('image','media','font')
+            or request.is_navigation_request() and request.frame==page.main_frame and not own):
+            return await route.abort()
+        try:await asyncio.to_thread(host_of,request.url)
+        except Exception:return await route.abort()
+        self.requests+=1
+        return await route.continue_()
+
+    async def _direct_response(self,response,page):
+        try:
+            headers=await response.all_headers()
+            if int(headers.get('content-length','0'))>8*1024*1024:
+                self.direct_error='Browser response exceeds 8 MB limit'
+            elif response.request.resource_type in ('document','script','stylesheet','xhr','fetch'):
+                body=await asyncio.wait_for(response.body(),timeout=5)
+                if page!=self.active_direct_page:return
+                self.direct_bytes+=len(body)
+                if len(body)>8*1024*1024 or self.direct_bytes>16*1024*1024:
+                    self.direct_error='Browser page exceeds response-size budget'
+            if self.direct_error:await page.close()
+        except Exception:
+            pass  # Navigation can replace a response before its body is readable.
 
     async def read(self,url):
         if time.monotonic()>=self.deadline:raise TimeoutError('Crawl time budget reached')
         self.fetcher=(self.direct_fetcher if self.skip_robots_for and same_owner(url,self.skip_robots_for) else self.policy_fetcher)
+        self.browser_direct=bool(self.skip_robots_for and same_owner(url,self.skip_robots_for) and not urlsplit(url).path.endswith('.xml'))
+        self.active_direct_page=None
         self.fetcher.deadline=min(self.deadline,time.monotonic()+50)
         self.fetcher.timeout=15
-        self.initial=await asyncio.to_thread(self.fetcher.fetch,url)
+        if self.browser_direct:
+            await asyncio.to_thread(host_of,url)
+            # Only listing-page navigations use the direct browser transport.
+            rate_host=(urlsplit(url).hostname or '').removeprefix('www.')
+            wait=self.fetcher.min_delay-(time.monotonic()-self.fetcher.last_fetch.get(rate_host,0))
+            if wait>0:await asyncio.sleep(wait)
+            self.fetcher.last_fetch[rate_host]=time.monotonic()
+            self.initial=(200,b'',{'X-CrowdStage-Final-URL':url})
+        else:self.initial=await asyncio.to_thread(self.fetcher.fetch,url)
         _,body,headers=self.initial
         self.current_url=headers.get('X-CrowdStage-Final-URL',url)
         self.requests=0
-        self.resource_deadline=min(self.deadline,time.monotonic()+10)
+        self.resource_deadline=min(self.deadline,time.monotonic()+(40 if self.browser_direct else 10))
+        self.direct_error=None;self.direct_bytes=0;self.response_tasks=[]
         if urlsplit(self.current_url).path.endswith('.xml'):
             return {'url':self.current_url,'html':body.decode('utf-8-sig','replace'),'links':[],'markdown':''}
-        result=await asyncio.wait_for(self.crawler.arun(url=self.current_url,config=self.config),timeout=55)
+        config=self.config.clone(delay_before_return_html=8) if self.browser_direct else self.config
+        result=await asyncio.wait_for(self.crawler.arun(url=self.current_url,config=config),timeout=55)
+        if self.response_tasks:
+            _,pending=await asyncio.wait(self.response_tasks,timeout=1)
+            for task in pending:task.cancel()
+            await asyncio.gather(*pending,return_exceptions=True)
+        if self.direct_error:raise RuntimeError(self.direct_error)
         if not result.success:raise RuntimeError('Crawl4AI: '+str(result.error_message)[:400])
+        if len(result.html.encode('utf-8'))>8*1024*1024:raise RuntimeError('Browser page exceeds 8 MB limit')
+        if not same_owner(result.redirected_url or self.current_url,url):raise RuntimeError('Browser left the approved website')
         links=[]
         for group in ('internal','external'):
             links.extend(result.links.get(group,[]))
         markdown=getattr(result.markdown,'raw_markdown',str(result.markdown or ''))
-        return {'url':self.current_url,'html':result.html,'links':links,'markdown':markdown}
+        return {'url':result.redirected_url or self.current_url,'html':result.html,'links':links,'markdown':markdown}
