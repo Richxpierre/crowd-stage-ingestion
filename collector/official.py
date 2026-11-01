@@ -64,7 +64,10 @@ def parse_official_html(body: bytes, source: dict, page_url: str | None = None) 
         registration_url=field("registration_url"), cfp_url=field("cfp_url"),
         cfp_deadline=None, status="upcoming", source_url=event_url,
     )
+    from .images import choose_image
+    record.update(choose_image(soup,event_url,selectors=selectors))
     try:
         return [_finish(record, source["publisher"], event_url)]
     except ValueError:
         return []
+

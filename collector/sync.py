@@ -15,6 +15,7 @@ from .fetch import Fetcher
 from .official import parse_official_html
 from .parsers import parse_ics, parse_jsonld, _finish, clean_url
 from .automatic import collect_automatic
+from .images import enrich_missing_images
 
 LOG = logging.getLogger('crowdstage-ingestion')
 BLOCKED_DIRECTORY_HOSTS = {'conferencegrid.com','sessionize.com'}
@@ -76,7 +77,10 @@ def sync_one(db, source):
             db.update_source(sid, {'discovery_report':report})
             code, body, headers = 200, b'', {}
         else:
-            code, body, headers = fetcher.fetch(source['url'], source.get('etag'), source.get('last_modified'))
+            # Upgrade existing sources once, even if the old image-less payload was cached.
+            image_ready=(source.get('discovery_report') or {}).get('image_extraction_version')==1
+            code, body, headers = fetcher.fetch(source['url'], source.get('etag') if image_ready else None,
+                                              source.get('last_modified') if image_ready else None)
         if code == 304:
             db.update_source(sid, {'last_success_at':utc_now(),'last_attempt_at':utc_now(),
                                    'last_error':None,'next_check_at':next_check(source)})
@@ -97,15 +101,22 @@ def sync_one(db, source):
         current_records = [r for r in records if r['end_date'] >= current_date or r.get('status') == 'cancelled']
         counts['skipped_count'] = len(records) - len(current_records)
         records = current_records
+        if kind != 'auto':
+            import time
+            fetcher.deadline=time.monotonic()+60
+            records=enrich_missing_images(fetcher,source,records)
         # Same feed UID/record ID is a single source observation.
         records = list({r['source_record_id']:r for r in records}.values())
         records = preserve_existing_identity(db, source, records)
         counts['fetched_count'] = len(records)
+        image_report=report if kind=='auto' else dict(source.get('discovery_report') or {})
+        image_report.update(image_extraction_version=1,images_found=sum(bool(r.get('cover_url')) for r in records))
         for i in range(0,len(records),100):
             batch = db.ingest(sid, records[i:i+100])
             for key in ('created','updated','unchanged','skipped'):
                 counts[key+'_count'] += int(batch.get(key,0))
         db.update_source(sid, {'etag':headers.get('ETag'), 'last_modified':headers.get('Last-Modified'),
+                              'discovery_report':image_report,
                               'last_success_at':utc_now(), 'last_attempt_at':utc_now(),
                               'next_check_at':next_check(source),'last_error':None})
         db.update_run(run_id, {**counts, 'status':'success' if records else 'unchanged','http_status':code,'completed_at':utc_now()})

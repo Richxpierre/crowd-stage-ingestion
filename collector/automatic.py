@@ -15,6 +15,7 @@ from xml.etree import ElementTree
 from bs4 import BeautifulSoup
 from .parsers import _finish, clean_url, parse_ics, parse_jsonld, plain
 from .official import parse_official_html
+from .images import choose_image
 
 MONTHS = {name.lower(): n for n, names in enumerate([
     ('January','Jan'),('February','Feb'),('March','Mar'),('April','Apr'),
@@ -137,6 +138,8 @@ def parse_sections(body, source, page_url):
             summary=plain((context.find('p').get_text(' ',strip=True) if context.find('p') else None)),
             event_url=event_url,official_url=event_url,registration_url=None,cfp_url=None,
             cfp_deadline=None,status='upcoming',source_url=page_url)
+        card=context if context.name in ('article','figure') else context.find_parent(['article','figure']) or link_context
+        record.update(choose_image(soup,page_url,card=card,selectors=source.get('selectors')))
         identity = f'{event_url}|{dates[0][:4]}|{title.lower()}'
         try:
             record = _finish(record,source['publisher'],identity)
@@ -160,6 +163,9 @@ def parse_microdata(body, source, page_url):
         loc=event.select_one('[itemprop="location"]')
         if loc:
             node['location']=loc.get_text(' ',strip=True)
+        image=event.select_one('[itemprop="image"]')
+        if image:
+            node['image']=image.get('content') or image.get('src') or image.get('href')
         wrapper=('<script type="application/ld+json">'+json.dumps(node).replace('</','<\\/')+'</script>').encode()
         out += parse_jsonld(wrapper,source,page_url)
     return out
@@ -196,7 +202,7 @@ def collect_automatic(fetcher, source):
     root=clean_url(source['url'])
     selectors=source.get('selectors') or {}
     limit=max(1,min(int(selectors.get('max_pages',8)),20))
-    queue=[root]; visited=set(); records=[]
+    queue=[root]; visited=set(); records=[]; page_images={}
     fetcher.deadline=time.monotonic()+120
     rendered_count=0
     report={'pages':[], 'errors':[], 'methods':[], 'limit':limit}
@@ -210,6 +216,7 @@ def collect_automatic(fetcher, source):
             code,body,headers=fetcher.fetch(url)
             actual=headers.get('X-CrowdStage-Final-URL',url)
             report['pages'].append(actual)
+            page_images[url]=page_images[actual]=choose_image(body,actual,selectors=source.get('selectors'))
             parsed=parse_page(body,source,actual)
             if not parsed and selectors.get('render',True) and rendered_count<2 and b'<script' in body.lower():
                 from .render import render_html
@@ -245,8 +252,17 @@ def collect_automatic(fetcher, source):
     # Repeated cards/details represent one edition, but distinct cities/editions stay separate.
     unique={}
     for r in records:
+        # A dedicated event page's share image is more relevant than a catalog's generic image.
+        page_image=page_images.get(r.get('event_url'),{})
+        if page_image and (not r.get('cover_url') or r.get('image_method') not in ('jsonld_event','event_card','selector')):
+            r.update(page_image)
+        _finish(r,source['publisher'],r['source_record_id'])
         location=re.sub(r'\W+',' ',r.get('city') or r.get('venue') or '').strip().lower()
         key=(r['start_date'],r['end_date'],location,re.sub(r'\W+',' ',r['title']).strip().lower())
-        unique.setdefault(key,r)
+        if key not in unique:
+            unique[key]=r
+        elif not unique[key].get('cover_url') and r.get('cover_url'):
+            unique[key].update({k:r[k] for k in ('cover_url','image_source_url','image_method')})
+            _finish(unique[key],source['publisher'],unique[key]['source_record_id'])
     report['events_found']=len(unique)
     return list(unique.values()),report

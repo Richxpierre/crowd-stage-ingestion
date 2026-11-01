@@ -136,6 +136,13 @@ def parse_ics(body: bytes, source: dict) -> list[dict]:
             status="cancelled" if raw("STATUS").upper() == "CANCELLED" else "upcoming",
             source_url=source["url"],
         )
+        from .images import image_url
+        image = image_url(raw('IMAGE'), source['url'])
+        attachment = item.get('ATTACH', ('',''))
+        if not image and 'FMTTYPE=IMAGE/' in attachment[0].upper():
+            image = image_url(_unescape_ics(attachment[1]), source['url'])
+        if image:
+            rec.update(cover_url=image,image_method='calendar_image',image_source_url=source['url'])
         try:
             out.append(_finish(rec, source["publisher"], uid))
         except ValueError:
@@ -225,6 +232,8 @@ def parse_jsonld(body: bytes, source: dict, page_url: str | None = None) -> list
                 status="cancelled" if "EventCancelled" in state else "upcoming",
                 source_url=page_url,
             )
+            from .images import choose_image
+            rec.update(choose_image(soup,page_url,event_image=node.get('image'),selectors=source.get('selectors')))
             # Prefer @id; otherwise keep annual editions distinct even on evergreen pages.
             # One dedicated official event page per annual edition keeps its identity
             # when the organizer corrects a title or shifts dates within that year.
