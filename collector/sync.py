@@ -13,8 +13,8 @@ from urllib.parse import urlsplit
 from .client import Client
 from .fetch import Fetcher
 from .official import parse_official_html
-from .parsers import parse_ics, parse_jsonld
-from .rss_parser import parse_rss
+from .parsers import parse_ics, parse_jsonld, _finish, clean_url
+from .automatic import collect_automatic
 
 LOG = logging.getLogger('crowdstage-ingestion')
 BLOCKED_DIRECTORY_HOSTS = {'conferencegrid.com','sessionize.com'}
@@ -34,6 +34,26 @@ def is_directory_target(url):
     return any(host == blocked or host.endswith('.' + blocked) for blocked in BLOCKED_DIRECTORY_HOSTS)
 
 
+def preserve_existing_identity(db, source, records):
+    """Keep the original UUID when an existing dedicated event page is renamed.
+
+    This also adopts identities written by the older title-based parser, avoiding
+    duplicate records when a source upgrades to the new parser.
+    """
+    if len(records) != 1 or not source.get('selectors', {}).get('single_event'):
+        return records
+    record = records[0]
+    matches = [obs for obs in db.observations(source['id'])
+               if clean_url(obs['payload'].get('event_url')) == clean_url(record.get('event_url'))
+               and str(obs['payload'].get('start_date',''))[:4] == record['start_date'][:4]]
+    identities = {obs['source_record_id'] for obs in matches}
+    if len(identities) > 1:
+        raise ValueError('Ambiguous event identities on a dedicated source; review duplicates first')
+    if identities:
+        return [_finish(record, source['publisher'], identities.pop())]
+    return records
+
+
 def sync_one(db, source):
     sid = source['id']
     counts = {'fetched_count':0,'created_count':0,'updated_count':0,'unchanged_count':0,'skipped_count':0}
@@ -41,26 +61,45 @@ def sync_one(db, source):
     try:
         if not source.get('is_official_source') or not source.get('ingestion_allowed') or not source.get('permission_reviewed_at') or len(str(source.get('permission_basis') or '').strip()) < 8:
             raise PermissionError('Only reviewed, approved, organizer-hosted direct sources may be refreshed')
+        if source.get('record_scope') != 'conference':
+            raise PermissionError('Source must be verified as a conference or conference catalog, not news or sessions')
+        if '/schedule/' in urlsplit(source['url']).path:
+            raise ValueError('Session schedules must not be imported as conferences')
         if is_directory_target(source['url']):
             raise PermissionError('Sessionize and ConferenceGrid are discovery sources, not recurring refresh targets')
-        if source.get('kind') not in ('ics','jsonld','official_html'):
+        if source.get('kind') not in ('auto','ics','jsonld','official_html'):
             raise ValueError('Unsupported direct URL kind')
         fetcher = Fetcher(os.environ.get('COLLECTOR_USER_AGENT',''),
                           min_delay_seconds=source.get('min_delay_seconds',2))
-        code, body, headers = fetcher.fetch(source['url'], source.get('etag'), source.get('last_modified'))
+        if source['kind'] == 'auto':
+            records, report = collect_automatic(fetcher, source)
+            db.update_source(sid, {'discovery_report':report})
+            code, body, headers = 200, b'', {}
+        else:
+            code, body, headers = fetcher.fetch(source['url'], source.get('etag'), source.get('last_modified'))
         if code == 304:
             db.update_source(sid, {'last_success_at':utc_now(),'last_attempt_at':utc_now(),
                                    'last_error':None,'next_check_at':next_check(source)})
             db.update_run(run_id, {'status':'unchanged','completed_at':utc_now(),'http_status':304})
             return counts
         kind = source['kind']
-        records = (parse_ics(body, source) if kind == 'ics'
-                   else parse_official_html(body, source) if kind == 'official_html'
-                   else parse_jsonld(body, source) or parse_rss(body, source))
+        if kind != 'auto':
+            records = (parse_ics(body, source) if kind == 'ics'
+                       else parse_official_html(body, source) if kind == 'official_html'
+                       else parse_jsonld(body, source))
         if not records:
-            raise ValueError('No valid Event records parsed; retaining prior events')
+            detail = (report['errors'][0]['message'] if kind == 'auto' and report['errors'] else
+                      'No explicit conference title, date and location found. Add an event page URL or advanced selectors.')
+            raise ValueError(f'No valid Event records. Needs attention: {detail}; prior events retained')
+        # Historical calendars must not refill the site with expired sessions/events.
+        # Keep cancellation observations so existing listings can still be archived.
+        current_date = datetime.now(timezone.utc).date().isoformat()
+        current_records = [r for r in records if r['end_date'] >= current_date or r.get('status') == 'cancelled']
+        counts['skipped_count'] = len(records) - len(current_records)
+        records = current_records
         # Same feed UID/record ID is a single source observation.
         records = list({r['source_record_id']:r for r in records}.values())
+        records = preserve_existing_identity(db, source, records)
         counts['fetched_count'] = len(records)
         for i in range(0,len(records),100):
             batch = db.ingest(sid, records[i:i+100])
@@ -69,7 +108,7 @@ def sync_one(db, source):
         db.update_source(sid, {'etag':headers.get('ETag'), 'last_modified':headers.get('Last-Modified'),
                               'last_success_at':utc_now(), 'last_attempt_at':utc_now(),
                               'next_check_at':next_check(source),'last_error':None})
-        db.update_run(run_id, {**counts, 'status':'success','http_status':code,'completed_at':utc_now()})
+        db.update_run(run_id, {**counts, 'status':'success' if records else 'unchanged','http_status':code,'completed_at':utc_now()})
         return counts
     except Exception as exc:
         LOG.exception('Source %s failed',source.get('slug'))
@@ -100,3 +139,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

@@ -27,7 +27,8 @@ class Client:
     def sources(self, slug=None):
         params = {
             'select': '*', 'is_active': 'eq.true', 'is_official_source': 'eq.true',
-            'ingestion_allowed': 'eq.true', 'order': 'next_check_at.asc', 'limit': '1000'
+            'ingestion_allowed': 'eq.true', 'record_scope':'eq.conference',
+            'order': 'next_check_at.asc', 'limit': '1000'
         }
         if slug:
             params['slug'] = 'eq.' + slug  # manual runs can force a not-yet-due source
@@ -39,6 +40,12 @@ class Client:
         return self.request('POST', 'conference_ingestion_runs', json={
             'source_id': source_id, 'status': 'running'
         }, headers={'Prefer':'return=representation'})[0]['id']
+
+    def observations(self, source_id):
+        return self.request('GET', 'conference_event_observations', params={
+            'select':'source_record_id,payload', 'source_id':'eq.'+source_id,
+            'order':'last_seen_at.desc', 'limit':'100'
+        })
 
     def update_run(self, run_id, record):
         self.request('PATCH', 'conference_ingestion_runs', params={'id':'eq.'+run_id}, json=record)
@@ -54,3 +61,4 @@ class Client:
     def upsert_candidates(self, rows):
         return self.request('POST', 'conference_url_candidates', params={'on_conflict':'url'},
             json=rows, headers={'Prefer':'resolution=ignore-duplicates,return=minimal'})
+
