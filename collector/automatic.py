@@ -62,8 +62,12 @@ def date_range(text):
 
 def same_site(url, root):
     p, base = urlsplit(url), urlsplit(root)
-    return (p.scheme == 'https' and not p.username and not p.password and p.port in (None,443)
-            and p.hostname and p.hostname.lower().removeprefix('www.') == (base.hostname or '').lower().removeprefix('www.'))
+    if not (p.scheme == 'https' and not p.username and not p.password and p.port in (None,443) and p.hostname):return False
+    a,b=p.hostname.lower().rstrip('.'),(base.hostname or '').lower().rstrip('.')
+    if a==b:return True
+    from .recovery import EXTRACT
+    left,right=EXTRACT(a),EXTRACT(b)
+    return bool(left.suffix and left.top_domain_under_public_suffix and left.top_domain_under_public_suffix==right.top_domain_under_public_suffix)
 
 
 def relevant_url(url, root):
@@ -195,6 +199,8 @@ def parse_dated_heading(body,source,url):
 
 def parse_page(body, source, url):
     from .feeds import feed_body,parse_feed
+    if (source.get('selectors') or {}).get('website_only') and (feed_body(body) or body.lstrip().startswith(b'BEGIN:VCALENDAR')):
+        return []
     if feed_body(body):
         records,method=parse_feed(body,{**source,'url':url}),'xml_event_feed'
     elif body.lstrip().startswith(b'BEGIN:VCALENDAR'):
@@ -211,17 +217,25 @@ def parse_page(body, source, url):
                       f"{r['title']} | {r['start_date']} – {r['end_date']} | {r.get('venue') or ''}") for r in records]
 
 
-def discover_links(body, url, root):
+def is_feed_url(url):
+    parsed=urlsplit(url)
+    return bool(re.search(r'\.(?:ics|rss|atom|xml|json)$|/(?:feed|feeds|rss|ical|icalendar)(?:/|$)',parsed.path,re.I) or re.search(r'(?:^|&)(?:ical|format)=(?:1|ics|rss|xml|ical)',parsed.query,re.I))
+
+
+def discover_links(body, url, root, website_only=False):
     from .feeds import feed_body,feed_links
     if feed_body(body):
+        if website_only:return []
         return list(dict.fromkeys(target for target in feed_links(body,url)
                                   if relevant_url(target,root) and target!=url))
     soup=BeautifulSoup(body,'html.parser')
     found=[]
     for el in soup.find_all(['a','link']):
+        if website_only and re.search(r'calendar|rss|atom|xml',str(el.get('type','')),re.I):continue
         target=clean_url(urljoin(url,el.get('href') or el.get_text(' ',strip=True)))
         if not target or not relevant_url(target,root) or target==url:
             continue
+        if website_only and is_feed_url(target) and 'sitemap' not in urlsplit(target).path.lower():continue
         label=el.get_text(' ',strip=True)+' '+target
         # Calendar links first; favor edition/visit/event detail pages over general links.
         score=10 if target.lower().endswith('.ics') else 5 if re.search(r'20\d{2}|events?|conference|convention|expo|summit|about|attend|visit|location',label,re.I) else 1
@@ -232,11 +246,13 @@ def discover_links(body, url, root):
 def collect_automatic(fetcher, source):
     root=clean_url(source['url'])
     selectors=source.get('selectors') or {}
+    website_only=selectors.get('website_only') is True
+    if website_only and is_feed_url(root):raise ValueError('Website-only collection needs the main organizer website, not a feed URL')
     limit=max(1,min(int(selectors.get('max_pages',8)),20))
     queue=[root]; visited=set(); records=[]; page_images={}
     fetcher.deadline=min(getattr(fetcher,'deadline',None) or float('inf'),time.monotonic()+120)
     rendered_count=0
-    report={'pages':[], 'errors':[], 'methods':[], 'limit':limit}
+    report={'pages':[], 'errors':[], 'methods':[], 'limit':limit,'website_only':website_only}
     # Fetch each page unconditionally: homepage 304 does not mean linked events are unchanged.
     while queue and len(visited)<limit:
         url=queue.pop(0)
@@ -260,7 +276,7 @@ def collect_automatic(fetcher, source):
                         body=rendered
             records.extend(parsed)
             report['methods'].extend(r['extraction']['method'] for r in parsed)
-            for link in discover_links(body,actual,root):
+            for link in discover_links(body,actual,root,website_only=website_only):
                 if link not in visited and link not in queue:
                     queue.append(link)
             if len(visited)==1:
@@ -272,7 +288,7 @@ def collect_automatic(fetcher, source):
                 for node in tree.iter():
                     if node.tag.rsplit('}',1)[-1]=='loc' and node.text:
                         target=clean_url(node.text)
-                        if target and relevant_url(target,root) and target not in visited and target not in queue:
+                        if target and relevant_url(target,root) and target not in visited and target not in queue and (not website_only or not is_feed_url(target) or 'sitemap' in urlsplit(target).path.lower()):
                             queue.append(target)
                             if len(queue)>=50:
                                 break

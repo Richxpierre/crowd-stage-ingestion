@@ -59,6 +59,8 @@ def collect_source(fetcher,source):
             code,body,headers=fetcher.fetch(source['url'],source.get('etag') if cache_ok else None,
                                           source.get('last_modified') if cache_ok else None)
             if code==304:return [],code,headers,report
+            if (source.get('selectors') or {}).get('website_only') and (feed_body(body) or body.lstrip().startswith(b'BEGIN:VCALENDAR')):
+                raise ValueError('Expected an organizer website page, received a feed')
             records=(parse_feed(body,source) if feed_body(body) else
                      parse_ics(body,source) if source['kind']=='ics' else
                      parse_official_html(body,source) if source['kind']=='official_html' else parse_jsonld(body,source))
@@ -86,7 +88,7 @@ def collect_source(fetcher,source):
     try:candidates=fallback_urls(source)
     except ValueError as exc:raise RecoveryFailure(str(exc),report) from exc
     options=source.get('selectors') or {}
-    fallback_selectors={key:options[key] for key in ('max_pages','render','cover_image') if key in options}
+    fallback_selectors={key:options[key] for key in ('max_pages','render','cover_image','website_only') if key in options}
     fallback_selectors.update(options.get('fallback_selectors') or {})
     for url in candidates:
         fallback={**source,'url':url,'kind':'auto','selectors':fallback_selectors}
