@@ -34,7 +34,7 @@ Keep only this repository's six-hour schedule enabled. Store server credentials
 only in trusted backend settings, and use the website's Supabase project URL.
 Existing ingestion tables and the batch RPC remain the shared contract.
 
-The website's `20261101054220_ingested_review_details.sql` migration is also
+The website's `20261101054731_ingested_review_details.sql` migration is also
 required for its current schema: it accepts unknown format, region, and price
 on ingested review records and requires a moderator to confirm them before
 publication. Without it, the original website's NOT NULL constraints reject
