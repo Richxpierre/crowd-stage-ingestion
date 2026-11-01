@@ -13,24 +13,30 @@ import requests
 LOG = logging.getLogger(__name__)
 LAST_FETCH = {}  # One host-wide limiter shared across sources in this worker process.
 
+class UnsafeDestination(ValueError):
+    """A destination that must never trigger alternate-host recovery."""
+
+class RobotsPathDenied(PermissionError):
+    """This path is disallowed; another path still needs its own robots check."""
+
 
 def host_of(url: str) -> str:
     p = urlsplit(url)
     if p.scheme != "https" or not p.hostname or p.username or p.password or p.port not in (None, 443):
-        raise ValueError(f"HTTPS and normal public hostname required: {url}")
+        raise UnsafeDestination(f"HTTPS and normal public hostname required: {url}")
     hostname = p.hostname.lower().rstrip(".")
     if hostname == "localhost" or "." not in hostname:
-        raise ValueError(f"Refusing local/non-public host: {hostname}")
+        raise UnsafeDestination(f"Refusing local/non-public host: {hostname}")
     try:
         ipaddress.ip_address(hostname)
-        raise ValueError("Direct IP literals are not permitted")
+        raise UnsafeDestination("Direct IP literals are not permitted")
     except ValueError as exc:
         if "Direct IP" in str(exc):
             raise
     # Reject non-public DNS results. Network routes are still subject to provider safeguards.
     ips = {item[4][0] for item in socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)}
     if not ips or any(not ipaddress.ip_address(ip).is_global for ip in ips):
-        raise ValueError(f"Refusing non-public DNS destination: {hostname}")
+        raise UnsafeDestination(f"Refusing non-public DNS destination: {hostname}")
     return hostname
 
 
@@ -96,7 +102,7 @@ class Fetcher:
         policy = self._get_robots(hostname)
         agent = self.session.headers["User-Agent"]
         if not policy.can_fetch(agent, url):
-            raise PermissionError(f"robots.txt blocks {url}")
+            raise RobotsPathDenied(f"robots.txt blocks {url}")
         delay = max(self.min_delay, float(policy.crawl_delay(agent) or 0))
         rate_host = hostname.removeprefix('www.')
         prev = self.last_fetch.get(rate_host, 0)

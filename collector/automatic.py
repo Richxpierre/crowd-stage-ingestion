@@ -172,7 +172,10 @@ def parse_microdata(body, source, page_url):
 
 
 def parse_page(body, source, url):
-    if body.lstrip().startswith(b'BEGIN:VCALENDAR'):
+    from .feeds import feed_body,parse_feed
+    if feed_body(body):
+        records,method=parse_feed(body,{**source,'url':url}),'xml_event_feed'
+    elif body.lstrip().startswith(b'BEGIN:VCALENDAR'):
         records,method=parse_ics(body,{**source,'url':url}),'ics'
     else:
         records,method=parse_official_html(body,source,url),'structured_event'
@@ -185,10 +188,14 @@ def parse_page(body, source, url):
 
 
 def discover_links(body, url, root):
+    from .feeds import feed_body,feed_links
+    if feed_body(body):
+        return list(dict.fromkeys(target for target in feed_links(body,url)
+                                  if relevant_url(target,root) and target!=url))
     soup=BeautifulSoup(body,'html.parser')
     found=[]
-    for el in soup.find_all(['a','link'],href=True):
-        target=clean_url(urljoin(url,el['href']))
+    for el in soup.find_all(['a','link']):
+        target=clean_url(urljoin(url,el.get('href') or el.get_text(' ',strip=True)))
         if not target or not relevant_url(target,root) or target==url:
             continue
         label=el.get_text(' ',strip=True)+' '+target
@@ -203,7 +210,7 @@ def collect_automatic(fetcher, source):
     selectors=source.get('selectors') or {}
     limit=max(1,min(int(selectors.get('max_pages',8)),20))
     queue=[root]; visited=set(); records=[]; page_images={}
-    fetcher.deadline=time.monotonic()+120
+    fetcher.deadline=min(getattr(fetcher,'deadline',None) or float('inf'),time.monotonic()+120)
     rendered_count=0
     report={'pages':[], 'errors':[], 'methods':[], 'limit':limit}
     # Fetch each page unconditionally: homepage 304 does not mean linked events are unchanged.
@@ -246,7 +253,12 @@ def collect_automatic(fetcher, source):
                             if len(queue)>=50:
                                 break
         except Exception as exc:
-            report['errors'].append({'url':url,'message':str(exc)[:250]})
+            from .fetch import UnsafeDestination
+            status=getattr(getattr(exc,'response',None),'status_code',None)
+            if url==root and (isinstance(exc,(PermissionError,UnsafeDestination)) or status==429):
+                raise
+            report['errors'].append({'url':url,'message':str(exc)[:250],'http_status':status})
+            if status==429:break
     report['methods']=sorted(set(report['methods']))
     report['pages_checked']=len(visited)
     # Repeated cards/details represent one edition, but distinct cities/editions stay separate.
