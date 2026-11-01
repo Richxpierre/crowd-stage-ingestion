@@ -53,7 +53,7 @@ class Crawl4AIReader:
         await context.route_web_socket('**/*',lambda ws:ws.close())
         async def route_request(route):
             request=route.request
-            if (request.method!='GET' or not same_owner(request.url,self.current_url) or self.requests>=25
+            if (request.method!='GET' or not same_owner(request.url,self.current_url) or self.requests>=12
                 or request.resource_type in ('image','media','font') or
                 (request.is_navigation_request() and clean_url(request.url)!=clean_url(self.current_url))):
                 return await route.abort()
@@ -63,6 +63,9 @@ class Crawl4AIReader:
             else:
                 try:
                     async with self.lock:
+                        if time.monotonic()>=self.resource_deadline:return await route.abort()
+                        self.fetcher.deadline=min(self.deadline,self.resource_deadline)
+                        self.fetcher.timeout=3
                         code,body,headers=await asyncio.to_thread(self.fetcher.fetch,request.url)
                 except Exception:return await route.abort()
             await route.fulfill(status=code,body=body,content_type=headers.get('Content-Type',headers.get('content-type','text/html')))
@@ -73,10 +76,12 @@ class Crawl4AIReader:
     async def read(self,url):
         if time.monotonic()>=self.deadline:raise TimeoutError('Crawl time budget reached')
         self.fetcher.deadline=min(self.deadline,time.monotonic()+50)
+        self.fetcher.timeout=15
         self.initial=await asyncio.to_thread(self.fetcher.fetch,url)
         _,body,headers=self.initial
         self.current_url=headers.get('X-CrowdStage-Final-URL',url)
         self.requests=0
+        self.resource_deadline=min(self.deadline,time.monotonic()+10)
         if urlsplit(self.current_url).path.endswith('.xml'):
             return {'url':self.current_url,'html':body.decode('utf-8-sig','replace'),'links':[],'markdown':''}
         result=await asyncio.wait_for(self.crawler.arun(url=self.current_url,config=self.config),timeout=55)

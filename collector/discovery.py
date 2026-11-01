@@ -20,7 +20,7 @@ from .parsers import clean_url
 LOG=logging.getLogger('crowdstage-discovery')
 EVENT_HINT=re.compile(r'conference|congress|symposium|convention|summit|expo|trade.?show|trade.?fair|workshop|con\b',re.I)
 OFFICIAL_HINT=re.compile(r'official|\bwebsite\b|\bhomepage\b|event\s*site|visit\s*site',re.I)
-DENY_HOSTS={'facebook.com','instagram.com','linkedin.com','twitter.com','x.com','youtube.com','youtu.be','tiktok.com','maps.google.com','accounts.google.com','play.google.com','apps.apple.com','eventbrite.com','meetup.com','10times.com','conferencemonkey.org','sessionize.com'}
+DENY_HOSTS={'facebook.com','instagram.com','linkedin.com','twitter.com','x.com','youtube.com','youtu.be','tiktok.com','maps.google.com','accounts.google.com','play.google.com','apps.apple.com','eventbrite.com','meetup.com','inomics.com','10times.com','conferencemonkey.org','sessionize.com'}
 SKIP=re.compile(r'/(?:login|signup|register|user|privacy|terms|legal|speaker|speakers|sessions?|schedule|blog|news|publish|contact|about|help)(?:/|$)',re.I)
 
 
@@ -54,8 +54,8 @@ def page_links(page):
             if len(context)<400 and re.search(r'website|homepage',context,re.I):label+=' '+context
             parent=parent.parent
         links.append({'href':urljoin(url,target),'text':label})
-    for urlmatch in re.findall(r'https://[^\s<>\)\]\"\']+',page.get('markdown','')):
-        links.append({'href':urlmatch.rstrip('.,;'),'text':'published website link'})
+    for label,urlmatch in re.findall(r'(?<!!)\[([^\]]+)\]\((https://[^\s\)]+)\)',page.get('markdown','')):
+        links.append({'href':urlmatch,'text':label})
     for script in soup.find_all('script',type='application/ld+json'):
         try:payload=json.loads(script.string or script.get_text())
         except ValueError:continue
@@ -80,6 +80,8 @@ def classify_links(page,seed,settings):
     for item in page_links(page):
         target=normalized_link(item['href'],page['url'])
         if not target:continue
+        if re.search(r'\.(?:png|jpe?g|gif|webp|svg|ico|avif|pdf|css|js|zip)(?:$|[?])',target,re.I):continue
+        if target==clean_url(page['url']):continue
         if same_owner(target,seed):
             # Some directories expose an explicit outbound redirect target in the link.
             args=parse_qs(urlsplit(target).query)
@@ -90,7 +92,10 @@ def classify_links(page,seed,settings):
                 internal.append(target)
         elif not excluded(target) and not SKIP.search(urlsplit(target).path) and OFFICIAL_HINT.search(item['text']):
             official.append({'url':target,'label':item['text']})
-    return list(dict.fromkeys(internal)),list({item['url']:item for item in official}.values())
+    internal=list(dict.fromkeys(internal))
+    # Reach actual listings before navigation/category pages on large catalogs.
+    internal.sort(key=lambda u:0 if re.search(r'/conference/|/e/|20\d{2}',u) else 1)
+    return internal,list({item['url']:item for item in official}.values())
 
 
 async def verify_organizer(reader,url):

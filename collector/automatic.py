@@ -171,6 +171,27 @@ def parse_microdata(body, source, page_url):
     return out
 
 
+def parse_dated_heading(body,source,url):
+    """An edition's own H1 can explicitly name both conference and dates.
+
+    Do not require address markup or infer a location from unstructured text.
+    Deadlines and catalog headings never qualify as event dates.
+    """
+    soup=BeautifulSoup(body,'html.parser')
+    headings=soup.find_all('h1')
+    if len(headings)!=1:return []
+    title=headings[0].get_text(' ',strip=True)
+    dates=date_range(title)
+    if not dates or len(title)>240 or not EVENT_WORD.search(title) or re.search(r'deadline|submission|call for|early.?bird|registration|calendar|directory|upcoming events',title,re.I):return []
+    record=dict(title=title,start_date=dates[0],end_date=dates[1],timezone=None,
+        venue=None,city=None,country=None,region=None,format='unknown',categories=[],summary=None,
+        event_url=url,official_url=url,registration_url=None,cfp_url=None,cfp_deadline=None,
+        status='upcoming',source_url=url)
+    record.update(choose_image(soup,url,selectors=source.get('selectors')))
+    record=_finish(record,source['publisher'],url+'|'+dates[0][:4])
+    return [_evidence(record,source,'dated_event_heading',title)]
+
+
 def parse_page(body, source, url):
     from .feeds import feed_body,parse_feed
     if feed_body(body):
@@ -183,6 +204,8 @@ def parse_page(body, source, url):
             records,method=parse_microdata(body,source,url),'microdata'
         if not records:
             records,method=parse_sections(body,source,url),'dated_html'
+        if not records:
+            records,method=parse_dated_heading(body,source,url),'dated_event_heading'
     return [_evidence(r,source,method,r.get('extraction',{}).get('evidence') or
                       f"{r['title']} | {r['start_date']} – {r['end_date']} | {r.get('venue') or ''}") for r in records]
 

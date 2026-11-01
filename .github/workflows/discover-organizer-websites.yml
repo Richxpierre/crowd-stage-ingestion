@@ -16,7 +16,6 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT }}
-      CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/crowdstage-crawler
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,6 +36,8 @@ jobs:
       - name: Discover and verify organizer sources
         if: steps.claim.outputs.has_job == 'true'
         run: python -m collector.discovery --job-file "$RUNNER_TEMP/crawl-job.json"
+        env:
+          CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/crowdstage-crawler
       - name: Record worker setup failure
         if: failure() && steps.claim.outputs.has_job == 'true'
         run: |

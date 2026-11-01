@@ -52,8 +52,23 @@ class DiscoveryTests(unittest.TestCase):
         p=page(SEED+'events.xml','<urlset><url><loc>https://directory.org/cloud</loc></url></urlset>')
         self.assertEqual(classify_links(p,SEED,{'listing_pattern':'.*'})[0],[SEED+'cloud'])
         with self.assertRaises(ValueError):page_links({**p,'html':'<!DOCTYPE bad><urlset/>'})
+    def test_markdown_images_and_navigation_are_not_organizers(self):
+        p=page(SEED,'<a href="/top/conferences">Conferences</a><a href="/conference/real-2027">Conference</a>')
+        p['markdown']='![Website](https://cdn.org/banner.png) [Official website](https://organizer.org/) [Website](https://cdn.org/logo.svg)'
+        internal,official=classify_links(p,SEED,{})
+        self.assertEqual(internal[0],SEED+'conference/real-2027')
+        self.assertEqual([x['url'] for x in official],[OFFICIAL])
     def test_upcoming_organizer_verified(self):
         self.assertEqual(asyncio.run(verify_organizer(Reader(),OFFICIAL))['event']['title'],'Cloud Conference')
+    def test_dated_edition_heading_without_address_markup(self):
+        Reader.pages[OFFICIAL]=page(OFFICIAL,'<h1>Cloud Conference, 18-20 November 2027</h1><p>Join the conference.</p>')
+        result=asyncio.run(verify_organizer(Reader(),OFFICIAL))
+        self.assertEqual(result['event']['start_date'],'2027-11-18')
+        self.assertIsNone(result['event']['venue'])
+        self.assertEqual(result['evidence']['method'],'dated_event_heading')
+    def test_deadline_heading_is_not_event_date(self):
+        Reader.pages[OFFICIAL]=page(OFFICIAL,'<h1>Cloud Conference submission deadline November 18, 2027</h1>')
+        self.assertIsNone(asyncio.run(verify_organizer(Reader(),OFFICIAL)))
     def test_past_and_cancelled_not_verified(self):
         for change in [{'startDate':'2020-01-01','endDate':'2020-01-02'},{'eventStatus':'https://schema.org/EventCancelled'}]:
             Reader.pages[OFFICIAL]=eventpage({**EVENT,**change})
