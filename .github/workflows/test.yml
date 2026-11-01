@@ -19,4 +19,19 @@ jobs:
         env:
           RUN_RENDER_TESTS: '1'
       - run: python -m compileall -q collector scripts
+  crawler-sdk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-crawler.txt
+      - run: pip install -r requirements-crawler.txt
+      - run: python -m playwright install --with-deps chromium
+      - run: python -m unittest discover -s tests -p test_discovery.py -v
+        env:
+          RUN_CRAWLER_TESTS: '1'
+          CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/crowdstage-crawler
 
