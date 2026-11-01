@@ -62,8 +62,18 @@ class Client:
         return self.request('POST', 'conference_url_candidates', params={'on_conflict':'url'},
             json=rows, headers={'Prefer':'resolution=ignore-duplicates,return=minimal'})
 
-    def claim_crawl_job(self):
-        return self.request('POST','rpc/claim_conference_crawl',json={})
+    def claim_crawl_job(self, job_id=None):
+        if not job_id:return self.request('POST','rpc/claim_conference_crawl',json={})
+        # An explicitly selected queued job is claimed atomically without touching other targets.
+        now=datetime.now(timezone.utc)
+        rows=self.request('PATCH','conference_crawl_jobs',params={'id':'eq.'+job_id,'status':'eq.queued','cancel_requested':'eq.false'},
+            json={'status':'running','started_at':now.isoformat(),'heartbeat_at':now.isoformat()},headers={'Prefer':'return=representation'})
+        if not rows:return None
+        from datetime import timedelta
+        job=rows[0]
+        self.request('PATCH','conference_crawler_targets',params={'id':'eq.'+job['target_id']},
+            json={'next_crawl_at':(now+timedelta(hours=job['config'].get('interval_hours',24))).isoformat()})
+        return job
 
     def crawl_job(self, job_id):
         rows=self.request('GET','conference_crawl_jobs',params={'id':'eq.'+job_id,'select':'id,status,cancel_requested'})
@@ -76,7 +86,7 @@ class Client:
         from datetime import timedelta
         since=(datetime.now(timezone.utc)-timedelta(days=7)).isoformat()
         rows=self.request('GET','conference_crawl_jobs',params={'target_id':'eq.'+target_id,'select':'visited_urls',
-            'completed_at':'gte.'+since,'order':'completed_at.desc','limit':'50'})
+            'completed_at':'gte.'+since,'config->settings->>discovery_mode':'eq.website_links','order':'completed_at.desc','limit':'50'})
         return {url for row in rows for url in row.get('visited_urls',[])}
 
     def record_discovery(self, job_id, listing, official, status, title, start, end, evidence, reason):
