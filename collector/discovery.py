@@ -51,7 +51,7 @@ def page_links(page):
         for _ in range(2):
             if parent is None:break
             context=parent.get_text(' ',strip=True)
-            if len(context)<400 and re.search(r'website|homepage',context,re.I):label+=' '+context
+            if len(context)<400 and (re.search(r'website|homepage',context,re.I) or EVENT_HINT.search(context)):label+=' '+context
             parent=parent.parent
         links.append({'href':urljoin(url,target),'text':label})
     for label,urlmatch in re.findall(r'(?<!!)\[([^\]]+)\]\((https://[^\s\)]+)\)',page.get('markdown','')):
@@ -139,7 +139,8 @@ async def run_job(db,job,reader_factory=Crawl4AIReader):
         if not state or state.get('status')!='running' or state.get('cancel_requested'):return False
         db.update_crawl_job(job['id'],{**stats,'errors':errors[-50:],'visited_urls':successful,'heartbeat_at':datetime.now(timezone.utc).isoformat(),**extra})
         return True
-    async with reader_factory(os.environ.get('COLLECTOR_USER_AGENT',''),deadline=deadline) as reader:
+    async with reader_factory(os.environ.get('COLLECTOR_USER_AGENT',''),deadline=deadline,
+        skip_robots_for=seed if settings.get('skip_robots') is True else None) as reader:
         while queue and stats['pages_scanned']<page_limit and stats['sources_added']<source_limit and time.monotonic()<deadline:
             if not heartbeat():cancelled=True;break
             url,depth=queue.pop(0)
