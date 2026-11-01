@@ -85,6 +85,12 @@ class DiscoveryTests(unittest.TestCase):
         _,links=classify_links(page(SEED+'conference/cloud',html),SEED,{})
         self.assertEqual([item['url'] for item in links],[OFFICIAL])
         self.assertTrue(links[0]['label'].startswith('Visit Website'))
+    def test_listing_pagination_does_not_consume_event_detail_depth(self):
+        Reader.pages={SEED:page(SEED,'<a href="?page=2">Next page</a>'),SEED+'?page=2':page(SEED+'?page=2','<a href="?page=3">Next page</a>'),SEED+'?page=3':page(SEED+'?page=3','<a href="/conference/cloud">Cloud conference</a>'),SEED+'conference/cloud':LISTING}
+        self.job['config'].update(max_depth=1,max_pages=4)
+        result=asyncio.run(run_job(DB(),self.job,Reader))
+        self.assertEqual(result['sources_added'],1)
+        self.assertIn(SEED+'conference/cloud',Reader.calls)
     def test_cancel_stops_before_fetch_or_insert(self):
         db=DB();db.cancel=True
         result=asyncio.run(run_job(db,self.job,Reader))

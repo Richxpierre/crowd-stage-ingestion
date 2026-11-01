@@ -127,7 +127,7 @@ async def run_job(db,job,reader_factory=Crawl4AIReader):
                 successful.append(url)
                 internal,candidates=classify_links(page,seed,settings)
                 if depth<depth_limit:
-                    queue.extend((target,depth+1) for target in internal if target not in visited and (target not in recent or re.search(r'\.xml$|[?&]page=|/top/|/page/',target)) and target not in {u for u,_ in queue})
+                    queue.extend((target,depth if re.search(r'[?&]page=|/page/\d+',target) else depth+1) for target in internal if target not in visited and (target not in recent or re.search(r'\.xml$|[?&]page=|/top/|/page/',target)) and target not in {u for u,_ in queue})
                     queue=queue[:500]
                 for candidate in candidates:
                     if candidate['url'] in outbound:continue
