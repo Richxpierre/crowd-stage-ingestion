@@ -34,6 +34,13 @@ Keep only this repository's six-hour schedule enabled. Store server credentials
 only in trusted backend settings, and use the website's Supabase project URL.
 Existing ingestion tables and the batch RPC remain the shared contract.
 
+The website's `20261101054220_ingested_review_details.sql` migration is also
+required for its current schema: it accepts unknown format, region, and price
+on ingested review records and requires a moderator to confirm them before
+publication. Without it, the original website's NOT NULL constraints reject
+partially described events. Apply the website's corrective migration after this
+repo's initial additive schema migration; do not replace the website schema.
+
 ## Local validation
 
 ```bash
@@ -44,4 +51,5 @@ python -m unittest discover -s tests -v
 ```
 
 **No source is enabled automatically.** Production deployment, external-site permissions, and integration with your live application must be verified separately. No Python worker or secret belongs in client-side Netlify code.
+
 
