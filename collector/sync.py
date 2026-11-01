@@ -14,6 +14,7 @@ from .client import Client
 from .fetch import Fetcher
 from .official import parse_official_html
 from .parsers import parse_ics, parse_jsonld, _finish, clean_url
+from .automatic import collect_automatic
 
 LOG = logging.getLogger('crowdstage-ingestion')
 BLOCKED_DIRECTORY_HOSTS = {'conferencegrid.com','sessionize.com'}
@@ -66,22 +67,30 @@ def sync_one(db, source):
             raise ValueError('Session schedules must not be imported as conferences')
         if is_directory_target(source['url']):
             raise PermissionError('Sessionize and ConferenceGrid are discovery sources, not recurring refresh targets')
-        if source.get('kind') not in ('ics','jsonld','official_html'):
+        if source.get('kind') not in ('auto','ics','jsonld','official_html'):
             raise ValueError('Unsupported direct URL kind')
         fetcher = Fetcher(os.environ.get('COLLECTOR_USER_AGENT',''),
                           min_delay_seconds=source.get('min_delay_seconds',2))
-        code, body, headers = fetcher.fetch(source['url'], source.get('etag'), source.get('last_modified'))
+        if source['kind'] == 'auto':
+            records, report = collect_automatic(fetcher, source)
+            db.update_source(sid, {'discovery_report':report})
+            code, body, headers = 200, b'', {}
+        else:
+            code, body, headers = fetcher.fetch(source['url'], source.get('etag'), source.get('last_modified'))
         if code == 304:
             db.update_source(sid, {'last_success_at':utc_now(),'last_attempt_at':utc_now(),
                                    'last_error':None,'next_check_at':next_check(source)})
             db.update_run(run_id, {'status':'unchanged','completed_at':utc_now(),'http_status':304})
             return counts
         kind = source['kind']
-        records = (parse_ics(body, source) if kind == 'ics'
-                   else parse_official_html(body, source) if kind == 'official_html'
-                   else parse_jsonld(body, source))
+        if kind != 'auto':
+            records = (parse_ics(body, source) if kind == 'ics'
+                       else parse_official_html(body, source) if kind == 'official_html'
+                       else parse_jsonld(body, source))
         if not records:
-            raise ValueError('No valid Event records parsed; retaining prior events')
+            detail = (report['errors'][0]['message'] if kind == 'auto' and report['errors'] else
+                      'No explicit conference title, date and location found. Add an event page URL or advanced selectors.')
+            raise ValueError(f'No valid Event records. Needs attention: {detail}; prior events retained')
         # Historical calendars must not refill the site with expired sessions/events.
         # Keep cancellation observations so existing listings can still be archived.
         current_date = datetime.now(timezone.utc).date().isoformat()

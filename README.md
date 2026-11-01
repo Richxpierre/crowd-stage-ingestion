@@ -30,7 +30,7 @@ run **Refresh approved official conference websites** in Actions.
 Before enabling this worker against a project that used website collection,
 follow the website's [handoff guide](https://github.com/Richxpierre/crowd-stage/blob/main/docs/INGESTION_HANDOFF.md):
 apply its single-owner migration and retire the deployed legacy Edge Functions.
-Keep only this repository's six-hour schedule enabled. Store server credentials
+Keep only this repository's 15-minute queue schedule enabled. Store server credentials
 only in trusted backend settings, and use the website's Supabase project URL.
 Existing ingestion tables and the batch RPC remain the shared contract.
 
@@ -50,7 +50,7 @@ pip install -r requirements.txt
 python -m unittest discover -s tests -v
 ```
 
-**No source is enabled automatically.** Production deployment, external-site permissions, and integration with your live application must be verified separately. No Python worker or secret belongs in client-side Netlify code.
+**Only sources explicitly registered or enabled by an administrator are collected.** Production deployment, external-site permissions, and integration with your live application must be verified separately. No Python worker or secret belongs in client-side Netlify code.
 
 
 ## Conference-only source validation
@@ -59,3 +59,12 @@ Apply the website migration `20261101061416_dynamic_event_discovery.sql` before 
 
 For a dedicated page representing one conference edition, set `selectors.single_event=true` to preserve identity if the organizer changes its title. Do not set this on a multi-event catalog. Existing observations retain their original identity across collector upgrades.
 
+## Add a website with only its URL
+
+Apply the website migration `20261101161645_url_only_sources.sql`. In Admin → Sources, paste the official organizer URL and click Add website. Names and identifiers are generated, the source is enabled in automatic mode and queued, and future discoveries go to Pending Review. No event is auto-published. Existing sources and advanced settings are preserved when the same URL is added again.
+
+Automatic mode tries JSON-LD Event data, schema.org microdata, linked ICS calendars, and dated HTML event sections. It follows relevant HTTPS links on the same website (including the www alias), up to 8 pages by default and 20 maximum, with a two-minute per-site HTTP budget. It can consult a sitemap when the landing page provides no event facts or useful links. The job installs Chromium and sets RENDER_HTML=1 for at most two JavaScript-rendering fallbacks per source. Rendering sends requests through the guarded HTTP fetcher; third-party domains, forms, WebSockets and service workers are blocked.
+
+Every discovery records its source page, method and supporting evidence. The admin sees pages checked, candidate count and errors. Missing dates produce no event; unknown prices, formats and location fields are not invented. English month-name dates and ISO dates are supported; unfamiliar languages/layouts, external-only widget data, login walls and robots restrictions may need a specific page URL or manual selectors in Settings. No generic parser can guarantee extraction from every website.
+
+The scheduled workflow checks due sources every 15 minutes after this branch is merged to main; GitHub may delay scheduled jobs. Each source retains its own refresh interval (24 hours by default, configurable from 6 to 720). This replaces the previous six-hour queue poll and does not add another collector or Supabase cron. Manual workflow dispatch can process a queued source sooner. Never re-enable the retired website collectors.

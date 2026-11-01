@@ -14,5 +14,9 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r requirements.txt
+      - run: python -m playwright install --with-deps chromium
       - run: python -m unittest discover -s tests -v
+        env:
+          RUN_RENDER_TESTS: '1'
       - run: python -m compileall -q collector scripts
+

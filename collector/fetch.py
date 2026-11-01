@@ -11,6 +11,7 @@ from urllib.robotparser import RobotFileParser
 import requests
 
 LOG = logging.getLogger(__name__)
+LAST_FETCH = {}  # One host-wide limiter shared across sources in this worker process.
 
 
 def host_of(url: str) -> str:
@@ -43,39 +44,67 @@ class Fetcher:
         self.min_delay = max(float(min_delay_seconds), 1.0)
         self.timeout = timeout
         self.robots: dict[str, RobotFileParser] = {}
-        self.last_fetch: dict[str, float] = {}
+        self.last_fetch = LAST_FETCH
+        self.deadline = None
+
+    def _timeout(self):
+        remaining = self.deadline - time.monotonic() if self.deadline else self.timeout
+        if remaining <= 0:
+            raise TimeoutError('Website collection reached its two-minute time budget')
+        return min(self.timeout, remaining)
 
     def _get_robots(self, hostname: str) -> RobotFileParser:
         if hostname in self.robots:
             return self.robots[hostname]
         url = f"https://{hostname}/robots.txt"
         host_of(url)
-        response = self.session.get(url, timeout=self.timeout, allow_redirects=False)
+        for attempt in range(5):
+            host_of(url)
+            response = self.session.get(url, timeout=self._timeout(), allow_redirects=False, stream=True)
+            if response.status_code not in (301,302,303,307,308):
+                break
+            target = urljoin(url,response.headers.get('Location',''))
+            response.close()
+            from .automatic import same_site
+            if attempt==4 or not same_site(target,f'https://{hostname}/') or urlsplit(target).path!='/robots.txt':
+                raise PermissionError(f'Cannot safely verify redirected robots.txt for {hostname}')
+            url=target
         if response.status_code in (401, 403):
             raise PermissionError(f"Robots policy denies access at {hostname}")
         if response.status_code == 404:
             lines = []
         elif response.status_code == 200:
-            if len(response.content) > 128 * 1024:
-                raise ValueError("Robots response unexpectedly large")
-            lines = response.text.splitlines()
+            data = bytearray()
+            for chunk in response.iter_content(8192):
+                self._timeout()
+                data.extend(chunk)
+                if len(data) > 128 * 1024:
+                    response.close()
+                    raise ValueError("Robots response unexpectedly large")
+            lines = data.decode('utf-8','replace').splitlines()
         else:
             raise RuntimeError(f"Cannot verify robots.txt for {hostname}: {response.status_code}")
+        response.close()
         policy = RobotFileParser(url)
         policy.parse(lines)
         self.robots[hostname] = policy
         return policy
 
-    def fetch(self, url: str, etag: str | None = None, last_modified: str | None = None):
+    def fetch(self, url: str, etag: str | None = None, last_modified: str | None = None, _redirects=0, _root=None):
+        self._timeout()
         hostname = host_of(url)
         policy = self._get_robots(hostname)
         agent = self.session.headers["User-Agent"]
         if not policy.can_fetch(agent, url):
             raise PermissionError(f"robots.txt blocks {url}")
         delay = max(self.min_delay, float(policy.crawl_delay(agent) or 0))
-        prev = self.last_fetch.get(hostname, 0)
+        rate_host = hostname.removeprefix('www.')
+        prev = self.last_fetch.get(rate_host, 0)
         if prev and time.monotonic() - prev < delay:
-            time.sleep(delay - (time.monotonic() - prev))
+            wait = delay - (time.monotonic() - prev)
+            if self.deadline and time.monotonic()+wait >= self.deadline:
+                raise TimeoutError('Website crawl delay exceeds remaining collection time')
+            time.sleep(wait)
         headers = {}
         if etag:
             headers["If-None-Match"] = etag
@@ -83,7 +112,7 @@ class Fetcher:
             headers["If-Modified-Since"] = last_modified
         try:
             for attempt in range(3):
-                response = self.session.get(url, headers=headers, timeout=self.timeout,
+                response = self.session.get(url, headers=headers, timeout=self._timeout(),
                                             allow_redirects=False, stream=True)
                 if response.status_code in (429, 500, 502, 503, 504) and attempt < 2:
                     response.close()
@@ -91,21 +120,32 @@ class Fetcher:
                     continue
                 break
             if response.status_code in (301, 302, 303, 307, 308):
-                # Do not silently follow cross-domain or extra redirects.
+                target = urljoin(url, response.headers.get('Location',''))
+                root = _root or url
+                from .automatic import same_site
+                if _redirects >= 4 or not same_site(target, root):
+                    response.close()
+                    raise RuntimeError(f'Redirect outside approved website or redirect loop: {url}')
+                # Every redirect rechecks public DNS, robots, rate limits and HTTPS.
+                self.last_fetch[rate_host] = time.monotonic()
                 response.close()
-                raise RuntimeError(f"Redirect must be reviewed and configured: {url}")
+                return self.fetch(target, etag, last_modified, _redirects+1, root)
             if response.status_code == 304:
                 response.close()
                 return 304, b"", response.headers
             response.raise_for_status()
             chunks, size = [], 0
             for chunk in response.iter_content(chunk_size=65536):
+                self._timeout()
                 size += len(chunk)
                 if size > 8 * 1024 * 1024:
                     raise RuntimeError("Source response exceeds 8 MB safety limit")
                 chunks.append(chunk)
-            return response.status_code, b"".join(chunks), response.headers
+            result_headers = dict(response.headers)
+            result_headers['X-CrowdStage-Final-URL'] = url
+            return response.status_code, b"".join(chunks), result_headers
         finally:
-            self.last_fetch[hostname] = time.monotonic()
+            self.last_fetch[rate_host] = time.monotonic()
             if "response" in locals():
                 response.close()
+
