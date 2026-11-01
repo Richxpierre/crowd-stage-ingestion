@@ -80,6 +80,11 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(result['sources_added'],1)
         self.assertEqual(db.records[0][2:7],(OFFICIAL,'linked','Cloud Conference',None,None))
         self.assertEqual(db.records[0][7]['method'],'aggregator_website_link')
+    def test_explicit_website_button_wins_over_nearby_registration_text(self):
+        html='<p>Website: <a href="https://organizer.org/">organizer.org</a> Apply: <a href="https://organizer.org/registration-form/">Registration</a></p><a href="https://organizer.org/">Visit Website</a>'
+        _,links=classify_links(page(SEED+'conference/cloud',html),SEED,{})
+        self.assertEqual([item['url'] for item in links],[OFFICIAL])
+        self.assertTrue(links[0]['label'].startswith('Visit Website'))
     def test_cancel_stops_before_fetch_or_insert(self):
         db=DB();db.cancel=True
         result=asyncio.run(run_job(db,self.job,Reader))

@@ -94,6 +94,8 @@ def classify_links(page,seed,settings):
     internal=list(dict.fromkeys(internal))
     # Reach actual listings before navigation/category pages on large catalogs.
     internal.sort(key=lambda u:0 if re.search(r'/conference/|/e/|20\d{2}',u) else 1)
+    buttons=[item for item in official if re.match(r'^\s*visit\s*(?:the\s+)?(?:conference|website|site)\b',item['label'],re.I)]
+    if buttons:official=buttons
     return internal,list({item['url']:item for item in official}.values())
 
 
