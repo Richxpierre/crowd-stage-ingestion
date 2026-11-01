@@ -17,6 +17,23 @@ Additive Python / Supabase / GitHub Actions backend for the **existing CrowdStag
 6. Authenticated platform-admin Edge Functions expose status and review/publish operations.
 7. Existing CrowdStage calendar continues reading `events` filtered to `published` using its current RLS.
 
+## Relationship to the website
+
+This repository is the sole recurring collector. The website in
+[`Richxpierre/crowd-stage`](https://github.com/Richxpierre/crowd-stage)
+reviews sources and publishes events in the same Supabase database.
+Its queue-refresh action marks an approved source due using `next_check_at`;
+this worker selects it on the next scheduled run. Queueing does not start a
+workflow or mean collection has completed. For immediate processing, manually
+run **Refresh approved official conference websites** in Actions.
+
+Before enabling this worker against a project that used website collection,
+follow the website's [handoff guide](https://github.com/Richxpierre/crowd-stage/blob/main/docs/INGESTION_HANDOFF.md):
+apply its single-owner migration and retire the deployed legacy Edge Functions.
+Keep only this repository's six-hour schedule enabled. Store server credentials
+only in trusted backend settings, and use the website's Supabase project URL.
+Existing ingestion tables and the batch RPC remain the shared contract.
+
 ## Local validation
 
 ```bash
@@ -27,3 +44,4 @@ python -m unittest discover -s tests -v
 ```
 
 **No source is enabled automatically.** Production deployment, external-site permissions, and integration with your live application must be verified separately. No Python worker or secret belongs in client-side Netlify code.
+
