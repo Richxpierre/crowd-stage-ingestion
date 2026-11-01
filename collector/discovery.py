@@ -1,8 +1,8 @@
-"""Queued aggregator discovery using Crawl4AI; only verified organizer URLs become sources."""
+"""Queued aggregator discovery using Crawl4AI; save organizer website-button URLs as sources."""
 from __future__ import annotations
 import argparse
 import asyncio
-from datetime import date,timedelta,datetime,timezone
+from datetime import datetime,timezone
 import json
 import logging
 import os
@@ -12,14 +12,13 @@ from pathlib import Path
 from urllib.parse import urljoin,urlsplit,parse_qs
 from xml.etree import ElementTree
 from bs4 import BeautifulSoup
-from .automatic import parse_page,relevant_url
 from .client import Client
 from .crawler_reader import Crawl4AIReader,same_owner
 from .parsers import clean_url
 
 LOG=logging.getLogger('crowdstage-discovery')
 EVENT_HINT=re.compile(r'conference|congress|symposium|convention|summit|expo|trade.?show|trade.?fair|workshop|con\b',re.I)
-OFFICIAL_HINT=re.compile(r'official|\bwebsite\b|\bhomepage\b|event\s*site|visit\s*site',re.I)
+OFFICIAL_HINT=re.compile(r'official|\bwebsite\b|\bhomepage\b|event\s*site|visit\s*(?:the\s+)?(?:site|conference)',re.I)
 DENY_HOSTS={'facebook.com','instagram.com','linkedin.com','twitter.com','x.com','youtube.com','youtu.be','tiktok.com','maps.google.com','accounts.google.com','play.google.com','apps.apple.com','eventbrite.com','meetup.com','inomics.com','10times.com','conferencemonkey.org','sessionize.com'}
 SKIP=re.compile(r'/(?:login|signup|register|user|privacy|terms|legal|speaker|speakers|sessions?|schedule|blog|news|publish|contact|about|help)(?:/|$)',re.I)
 
@@ -98,33 +97,6 @@ def classify_links(page,seed,settings):
     return internal,list({item['url']:item for item in official}.values())
 
 
-async def verify_organizer(reader,url):
-    queue=[url];seen=set()
-    today=date.today();horizon=today+timedelta(days=730)
-    for _ in range(2):
-        if not queue:break
-        page_url=queue.pop(0)
-        if page_url in seen:continue
-        seen.add(page_url)
-        page=await reader.read(page_url)
-        host=urlsplit(page['url']).hostname
-        source={'url':page['url'],'name':host,'publisher':host,'is_official_source':True,'selectors':{}}
-        for event in parse_page(page['html'].encode('utf-8'),source,page['url']):
-            if (event.get('status')!='cancelled' and date.fromisoformat(event['end_date'])>=today
-                and date.fromisoformat(event['start_date'])<=horizon and EVENT_HINT.search(' '.join([
-                    event['title'],event.get('summary') or '', ' '.join(event.get('categories') or [])]))):
-                canonical=clean_url(event.get('event_url')) or page['url']
-                if not same_owner(canonical,url) or excluded(canonical):canonical=page['url']
-                return {'url':canonical,'event':event,'evidence':{
-                    'verified_page':page['url'],'method':event.get('extraction',{}).get('method','structured_event'),
-                    'excerpt':(event.get('extraction',{}).get('evidence') or event.get('summary') or event['title'])[:1500]}}
-        for link in page_links(page):
-            target=clean_url(link['href'])
-            if target and same_owner(target,url) and relevant_url(target,url) and target not in seen:
-                if re.search(r'20\d{2}|conference|expo|event|summit',target+' '+link['text'],re.I):queue.append(target)
-    return None
-
-
 async def run_job(db,job,reader_factory=Crawl4AIReader):
     config=job['config'];settings=config.get('settings') or {};seed=config['url']
     page_limit=max(1,min(int(config.get('max_pages',10)),100))
@@ -133,6 +105,7 @@ async def run_job(db,job,reader_factory=Crawl4AIReader):
     deadline=time.monotonic()+360
     stats={'pages_scanned':0,'links_found':0,'sources_added':0,'duplicates':0,'needs_review':0,'rejected':0}
     errors=[];queue=[(seed,0)];visited=set();successful=[];outbound=set();fallback_seeds_added=False;cancelled=False
+    db.update_crawl_job(job['id'],{'config':{**config,'settings':{**settings,'discovery_mode':'website_links'}}})
     recent=db.recent_crawled_pages(job['target_id'])
     def heartbeat(**extra):
         state=db.crawl_job(job['id'])
@@ -160,20 +133,16 @@ async def run_job(db,job,reader_factory=Crawl4AIReader):
                     if not heartbeat():cancelled=True;break
                     outbound.add(candidate['url']);stats['links_found']+=1
                     try:
-                        verified=await verify_organizer(reader,candidate['url'])
-                        event=verified['event'] if verified else {}
-                        result=db.record_discovery(job['id'],page['url'],verified['url'] if verified else candidate['url'],
-                            'verified' if verified else 'needs_review',event.get('title'),event.get('start_date'),event.get('end_date'),
-                            {**(verified['evidence'] if verified else {}),'link_label':candidate['label'][:300]},
-                            'Upcoming organizer event verified' if verified else 'No explicit upcoming conference found on the linked organizer page')
+                        title_node=BeautifulSoup(page['html'],'html.parser').find('h1')
+                        title=title_node.get_text(' ',strip=True)[:240] if title_node else None
+                        result=db.record_discovery(job['id'],page['url'],candidate['url'],'linked',title,None,None,
+                            {'method':'aggregator_website_link','link_label':candidate['label'][:300]},
+                            'Organizer website button URL saved; event parsing is queued separately')
                         key={'added':'sources_added','existing':'duplicates','needs_review':'needs_review','rejected':'rejected'}[result['status']]
                         stats[key]+=1
                     except Exception as exc:
                         errors.append({'url':candidate['url'],'message':str(exc)[:500]})
                         if not heartbeat():cancelled=True;break
-                        db.record_discovery(job['id'],page['url'],candidate['url'],'needs_review',None,None,None,
-                            {'link_label':candidate['label'][:300]},'Could not verify organizer: '+str(exc)[:400])
-                        stats['needs_review']+=1
             except Exception as exc:
                 errors.append({'url':url,'message':str(exc)[:500]})
                 if not fallback_seeds_added:

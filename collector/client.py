@@ -76,7 +76,7 @@ class Client:
         from datetime import timedelta
         since=(datetime.now(timezone.utc)-timedelta(days=7)).isoformat()
         rows=self.request('GET','conference_crawl_jobs',params={'target_id':'eq.'+target_id,'select':'visited_urls',
-            'completed_at':'gte.'+since,'order':'completed_at.desc','limit':'50'})
+            'completed_at':'gte.'+since,'config->settings->>discovery_mode':'eq.website_links','order':'completed_at.desc','limit':'50'})
         return {url for row in rows for url in row.get('visited_urls',[])}
 
     def record_discovery(self, job_id, listing, official, status, title, start, end, evidence, reason):
