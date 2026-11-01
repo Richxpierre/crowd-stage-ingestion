@@ -77,6 +77,12 @@ Apply the companion website image-persistence migration before enabling this col
 
 ## Broken feed recovery
 
+### Website-first source registrations
+
+New sources now default to `selectors.website_only: true`. Automatic collection extracts facts and images from HTML pages, structured Event data and dated page sections, with JavaScript rendering when needed. It skips RSS/Atom/XML event feeds and calendar links and does not interpret a feed returned at a website URL as event data. XML sitemaps can still locate real event pages; they are navigation indexes, not the source of event facts. Annual edition subdomains on the same owner domain are supported, with private hosting tenant boundaries retained.
+
+Legacy feed registrations have been migrated to their organizer websites without changing source IDs or deleting observations. Original URLs, names, errors and reports remain in `selectors.website_transition`. Duplicate feeds are retired against an existing website source through `retired_source_id`; they stay paused and are visible in the dashboard's archive view. Explicit advanced feed configurations remain supported by selecting a feed parser and setting `website_only: false`.
+
 If a feed or configured page errors, is malformed or yields no usable Event records, the worker tries automatic discovery on the organizer website. It keeps the registered URL and parser, records the primary error and each recovery attempt in discovery_report, and probes the original source again on later runs. Recovered sources are retried after six hours; the scheduler checks due sources every 15 minutes. Failed recovery retains existing events and reports Needs attention. Source and per-run time budgets keep broken sites from monopolizing scheduled runs.
 
 The default fallback strips the feed path to its existing HTTPS origin. Common feed subdomains can also fall back to their parent website using an offline Public Suffix List, including private hosting tenant boundaries. Domains are not guessed by swapping .org, .com or .net. RSS/Atom feeds can provide explicit Event data or links to actual event pages; publication timestamps are never conference dates.
