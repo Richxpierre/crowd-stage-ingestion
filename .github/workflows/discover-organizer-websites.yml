@@ -3,6 +3,11 @@ on:
   schedule:
     - cron: '2-59/5 * * * *'
   workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Queued crawl job ID (optional; limits this run to that job)'
+        required: false
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -28,12 +33,20 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Claim an admin-queued or scheduled crawl
         id: claim
-        run: python -m collector.discovery --claim-only "$RUNNER_TEMP/crawl-job.json"
+        shell: bash
+        env:
+          CRAWL_JOB_ID: ${{ inputs.job_id }}
+        run: |
+          if [ -n "$CRAWL_JOB_ID" ]; then
+            python -m collector.discovery --claim-only "$RUNNER_TEMP/crawl-job.json" --job-id "$CRAWL_JOB_ID"
+          else
+            python -m collector.discovery --claim-only "$RUNNER_TEMP/crawl-job.json"
+          fi
       - if: steps.claim.outputs.has_job == 'true'
         run: pip install -r requirements-crawler.txt
       - if: steps.claim.outputs.has_job == 'true'
         run: python -m playwright install --with-deps chromium
-      - name: Discover and verify organizer sources
+      - name: Collect organizer website-button URLs
         if: steps.claim.outputs.has_job == 'true'
         run: python -m collector.discovery --job-file "$RUNNER_TEMP/crawl-job.json"
         env:

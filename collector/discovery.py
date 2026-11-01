@@ -164,9 +164,11 @@ def main():
     group=parser.add_mutually_exclusive_group()
     group.add_argument('--claim-only',help='Claim a job and write its snapshot for the worker')
     group.add_argument('--job-file',help='Process a previously claimed job snapshot')
+    parser.add_argument('--job-id',help='Claim only this queued job for a scoped manual run')
     args=parser.parse_args()
     logging.basicConfig(level=logging.INFO)
-    db=Client();job=json.loads(Path(args.job_file).read_text(encoding='utf-8')) if args.job_file else db.claim_crawl_job()
+    if args.job_file and args.job_id:parser.error('--job-id cannot be combined with --job-file')
+    db=Client();job=json.loads(Path(args.job_file).read_text(encoding='utf-8')) if args.job_file else db.claim_crawl_job(args.job_id)
     if args.claim_only:
         if job and job.get('id'):Path(args.claim_only).write_text(json.dumps(job,ensure_ascii=True),encoding='utf-8')
         if os.environ.get('GITHUB_OUTPUT'):
