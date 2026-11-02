@@ -8,6 +8,11 @@ on:
         description: 'Approved source slug to force refresh (leave blank to refresh due sources)'
         required: false
         type: string
+      parse_only:
+        description: 'Save extraction evidence only; do not change events (requires a source slug)'
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: read
 concurrency:
@@ -21,6 +26,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       RENDER_HTML: '1'
+      SOURCE_PARSE_PASSES: '1'
       COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT }}
     steps:
       - uses: actions/checkout@v4
@@ -34,8 +40,11 @@ jobs:
         shell: bash
         env:
           SOURCE_SLUG: ${{ inputs.source_slug }}
+          PARSE_ONLY: ${{ inputs.parse_only }}
         run: |
-          if [ -n "$SOURCE_SLUG" ]; then
+          if [ "$PARSE_ONLY" = "true" ]; then
+            python -m collector.sync --slug "$SOURCE_SLUG" --parse-only
+          elif [ -n "$SOURCE_SLUG" ]; then
             python -m collector.sync --slug "$SOURCE_SLUG"
           else
             python -m collector.sync
