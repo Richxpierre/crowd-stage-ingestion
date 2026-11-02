@@ -120,6 +120,10 @@ class Client:
     def frontier_progress(self,job_id):
         return self.request('POST','rpc/conference_frontier_progress',json={'p_job_id':job_id})
 
+    def frontier_errors(self,target_id,generation):
+        return self.request('GET','conference_crawl_frontier',params={'target_id':'eq.'+target_id,'generation':'eq.'+generation,
+            'status':'eq.error','select':'url,last_error','limit':'50'})
+
     def continue_bulk_crawl(self,job_id):
         return self.request('POST','rpc/continue_conference_bulk_crawl',json={'p_job_id':job_id})
 

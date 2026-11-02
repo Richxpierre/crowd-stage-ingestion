@@ -86,8 +86,12 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
                 db.fail_frontier(job['id'],item,str(exc)[:400])
         progress=db.frontier_progress(job['id'])
         progress.update(getattr(reader,'stats',{}));config['bulk_progress']=progress
+        if progress.get('failed_tasks'):
+            errors.extend({'url':item['url'],'message':item.get('last_error') or 'Saved task exhausted retries'}
+                          for item in db.frontier_errors(job['target_id'],generation))
     status='cancelled' if cancelled else 'partial' if errors or progress['pending_pages'] or progress['pending_sources'] else 'completed'
     message=f"Bulk discovery: {stats['pages_scanned']} pages, {stats['sources_added']} added, {stats['duplicates']} existing; {progress['pending_pages']} pages and {progress['pending_sources']} links saved for continuation"
+    if progress.get('failed_tasks'):message+=f"; {progress['failed_tasks']} failed tasks require review"
     db.update_crawl_job(job['id'],{**stats,'config':config,'status':status,'errors':errors[-50:],'summary':message,
         'completed_at':datetime.now(timezone.utc).isoformat()})
     return {**stats,'status':status,'bulk_progress':progress}

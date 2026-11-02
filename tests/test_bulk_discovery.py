@@ -29,7 +29,8 @@ class DB:
         for t in rows:t.update(status='leased',attempts=t['attempts']+1)
         return rows
     def finish_frontier(self,j,id):next(t for t in self.tasks.values() if t['id']==id)['status']='done'
-    def fail_frontier(self,j,item,error):item.update(status='error' if item['attempts']>=3 else 'queued')
+    def fail_frontier(self,j,item,error):item.update(status='error' if item['attempts']>=3 else 'queued',last_error=error)
+    def frontier_errors(self,target,generation):return [t for t in self.tasks.values() if t['status']=='error']
     def complete_frontier_sources(self,j,ids):
         out=[]
         for t in self.tasks.values():
@@ -39,7 +40,8 @@ class DB:
         return out
     def frontier_progress(self,j):
         return {'pending_pages':sum(t['task_kind']=='page' and t['status'] in ('queued','leased') for t in self.tasks.values()),
-                'pending_sources':sum(t['task_kind']=='source' and t['status'] in ('queued','leased') for t in self.tasks.values())}
+                'pending_sources':sum(t['task_kind']=='source' and t['status'] in ('queued','leased') for t in self.tasks.values()),
+                'failed_tasks':sum(t['status']=='error' for t in self.tasks.values())}
 
 class BulkTests(unittest.TestCase):
     def setUp(self):Reader.calls=[]
@@ -81,9 +83,11 @@ class BulkTests(unittest.TestCase):
         self.assertEqual(result['status'],'cancelled');self.assertEqual(Reader.calls,[])
     def test_failed_pages_retry_then_become_visible_errors(self):
         Reader.pages={SEED:page(SEED,'<h1>Unknown markup</h1>')};db=DB()
-        for _ in range(4):asyncio.run(run_bulk_job(db,self.job(),Reader))
+        for _ in range(4):result=asyncio.run(run_bulk_job(db,self.job(),Reader))
         self.assertEqual(len(Reader.calls),3)
         self.assertEqual(next(iter(db.tasks.values()))['status'],'error')
+        self.assertEqual(result['status'],'partial')
+        self.assertTrue(db.updates[-1]['errors'])
     def test_static_html_does_not_start_browser(self):
         class Fetcher:
             def fetch(self,url):return 200,b'<a href="/conference">Conference</a>',{}
