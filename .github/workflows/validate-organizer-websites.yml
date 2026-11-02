@@ -26,7 +26,6 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT }}
       SEARXNG_URL: http://127.0.0.1:8888
-      CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/crowdstage-validator
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -58,6 +57,7 @@ jobs:
       - name: Validate queued websites
         if: steps.pending.outputs.has_work == 'true'
         env:
+          CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/crowdstage-validator
           VALIDATION_ID: ${{ inputs.validation_id }}
           VALIDATION_DRY_RUN: ${{ inputs.dry_run }}
         shell: bash
