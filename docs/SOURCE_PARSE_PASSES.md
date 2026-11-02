@@ -18,6 +18,19 @@ URL and edition. Administrator-declared single-event websites can join their
 configured supplementary pages. Conflicting values stay unknown. Missing facts
 can retain prior observations only for exactly the same identity and dates.
 
+Progress rows are emitted before network collection starts, after each shared
+page fetch, after each extracted page and at pass completion. `progress_stage`,
+`pages_done`, `pages_total` and `heartbeat_at` distinguish page-budget use from
+field extraction. The dashboard reserves the final completion state until the
+worker finishes; old workers without counters appear indeterminate while running.
+
+Database triggers retain diagnostics in `conference_source_parse_errors` when
+passes, ingestion runs or manual requests fail. Identical repeated writes for one
+run/pass are deduplicated; later successful retries do not erase history. Missing
+facts become warning notices, separate from actual errors. Admins have read-only
+access to error history; only the worker/database records it. The source settings
+dialog shows the latest 100 source diagnostics and can filter by pass.
+
 The admin page is `/admin/source-parser?source=<source UUID>`, linked from Sources.
 Run one pass to save an extraction preview independently. Run all four to assemble
 and ingest eligible upcoming events into the existing publication-review pipeline.
