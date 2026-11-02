@@ -99,6 +99,11 @@ def classify_links(page,seed,settings):
 
 
 async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
+    from .ai_planner import run_planning_job,run_mapped_job
+    if job['config'].get('settings',{}).get('ai_plan_requested') is True:
+        return await run_planning_job(db,job,reader_factory)
+    if job['config'].get('settings',{}).get('crawl_plan'):
+        return await run_mapped_job(db,job,reader_factory)
     config=job['config'];settings=config.get('settings') or {};seed=config['url']
     page_limit=max(1,min(int(config.get('max_pages',10)),100))
     source_limit=max(1,min(int(config.get('max_sources',10)),50))
