@@ -290,4 +290,3 @@ def retain_known_optional(records, observations, publisher):
         record['extraction']['retained_previous_fields']=retained
         _finish(record,publisher,record['source_record_id'])
     return records
-
