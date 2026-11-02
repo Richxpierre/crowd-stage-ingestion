@@ -132,15 +132,15 @@ async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
                     search_candidates[target]=item
                     if len(search_candidates)>=20:break
                 if len(search_candidates)>=20:break
-            search_report['results']=len(search_candidates)
-            # Every search hit still passes through the guarded Crawl4AI reader.
-            queue.extend((url,0) for url in search_candidates if url!=seed)
-            if search_report['warnings']:
-                errors.append({'url':seed,'message':'Some search engines were unavailable: '+str(search_report['warnings'])[:400]})
         except Exception as exc:
             errors.append({'url':seed,'message':'Search assistance: '+str(exc)[:450]})
         finally:
             if search:search.close()
+            search_report['results']=len(search_candidates)
+            # Retain successful earlier searches even if a later query fails.
+            queue.extend((url,0) for url in search_candidates if url!=seed)
+            if search_report['warnings']:
+                errors.append({'url':seed,'message':'Some search engines were unavailable: '+str(search_report['warnings'])[:400]})
             heartbeat()
     async with reader_factory(os.environ.get('COLLECTOR_USER_AGENT',''),deadline=deadline,
         skip_robots_for=seed if settings.get('skip_robots') is True else None) as reader:

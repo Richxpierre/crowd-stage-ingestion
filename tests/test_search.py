@@ -102,6 +102,15 @@ class HybridTests(unittest.TestCase):
         db=DB();r=asyncio.run(run_job(db,self.job,Reader,Search))
         self.assertEqual(r['sources_added'],1)
         self.assertIn('provider unavailable',db.updates[-1]['errors'][0]['message'])
+    def test_later_query_failure_preserves_earlier_results(self):
+        class PartialSearch(Search):
+            def search(self,q):
+                if q=='second':raise RuntimeError('second query failed')
+                return super().search(q)
+        self.job['config']['settings']['search_queries']=['first','second']
+        db=DB();r=asyncio.run(run_job(db,self.job,Reader,PartialSearch))
+        self.assertEqual(r['needs_review'],1)
+        self.assertEqual(db.updates[-1]['config']['search_report']['results'],2)
     def test_disabled_or_cancelled_never_searches(self):
         self.job['config']['settings']['search_enabled']=False
         asyncio.run(run_job(DB(),self.job,Reader,Search));self.assertEqual(Search.calls,[])
