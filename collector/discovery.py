@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup
 from .client import Client
 from .crawler_reader import Crawl4AIReader,same_owner
 from .parsers import clean_url
+from .search import SearXNG,search_queries,conference_page
 
 LOG=logging.getLogger('crowdstage-discovery')
 EVENT_HINT=re.compile(r'conference|congress|symposium|convention|summit|expo|trade.?show|trade.?fair|workshop|con\b',re.I)
@@ -97,7 +98,7 @@ def classify_links(page,seed,settings):
     return internal,list({item['url']:item for item in official}.values())
 
 
-async def run_job(db,job,reader_factory=Crawl4AIReader):
+async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
     config=job['config'];settings=config.get('settings') or {};seed=config['url']
     page_limit=max(1,min(int(config.get('max_pages',10)),100))
     source_limit=max(1,min(int(config.get('max_sources',10)),50))
@@ -105,24 +106,70 @@ async def run_job(db,job,reader_factory=Crawl4AIReader):
     deadline=time.monotonic()+360
     stats={'pages_scanned':0,'links_found':0,'sources_added':0,'duplicates':0,'needs_review':0,'rejected':0}
     errors=[];queue=[(seed,0)];visited=set();successful=[];outbound=set();fallback_seeds_added=False;cancelled=False
-    db.update_crawl_job(job['id'],{'config':{**config,'settings':{**settings,'discovery_mode':'website_links'}}})
+    config={**config,'settings':{**settings,'discovery_mode':'website_links'}}
+    search_candidates={};search_report={'enabled':settings.get('search_enabled') is True,'requests':0,'results':0,'pages_checked':0,'warnings':[]}
+    config['search_report']=search_report
+    db.update_crawl_job(job['id'],{'config':config})
     recent=db.recent_crawled_pages(job['target_id'])
     def heartbeat(**extra):
         state=db.crawl_job(job['id'])
         if not state or state.get('status')!='running' or state.get('cancel_requested'):return False
-        db.update_crawl_job(job['id'],{**stats,'errors':errors[-50:],'visited_urls':successful,'heartbeat_at':datetime.now(timezone.utc).isoformat(),**extra})
+        db.update_crawl_job(job['id'],{**stats,'config':config,'errors':errors[-50:],'visited_urls':successful,'heartbeat_at':datetime.now(timezone.utc).isoformat(),**extra})
         return True
+    if search_report['enabled'] and heartbeat():
+        search=None
+        try:
+            search=search_factory(deadline=min(deadline,time.monotonic()+45))
+            for query in search_queries(seed,config.get('name'),settings):
+                if not heartbeat():cancelled=True;break
+                search_report['requests']+=1
+                response=await asyncio.to_thread(search.search,query)
+                if response.get('warnings'):search_report['warnings'].append(response['warnings'])
+                for item in response['results']:
+                    target=item['url']
+                    if target in search_candidates or excluded(target) and not same_owner(target,seed):continue
+                    if re.search(r'\.(?:xml|rss|ics|pdf|png|jpe?g|svg|zip)(?:$|[?])',target,re.I):continue
+                    search_candidates[target]=item
+                    if len(search_candidates)>=20:break
+                if len(search_candidates)>=20:break
+            search_report['results']=len(search_candidates)
+            # Every search hit still passes through the guarded Crawl4AI reader.
+            queue.extend((url,0) for url in search_candidates if url!=seed)
+            if search_report['warnings']:
+                errors.append({'url':seed,'message':'Some search engines were unavailable: '+str(search_report['warnings'])[:400]})
+        except Exception as exc:
+            errors.append({'url':seed,'message':'Search assistance: '+str(exc)[:450]})
+        finally:
+            if search:search.close()
+            heartbeat()
     async with reader_factory(os.environ.get('COLLECTOR_USER_AGENT',''),deadline=deadline,
         skip_robots_for=seed if settings.get('skip_robots') is True else None) as reader:
         while queue and stats['pages_scanned']<page_limit and stats['sources_added']<source_limit and time.monotonic()<deadline:
-            if not heartbeat():cancelled=True;break
+            if cancelled or not heartbeat():cancelled=True;break
             url,depth=queue.pop(0)
-            if url in visited or not same_owner(url,seed):continue
+            search_hit=search_candidates.get(url)
+            external=bool(search_hit and not same_owner(url,seed))
+            if url in visited or not(same_owner(url,seed) or external):continue
             if depth>0 and url in recent and not re.search(r'\.xml$|[?&]page=|/top/|/page/',url):continue
             visited.add(url);stats['pages_scanned']+=1
             try:
                 page=await reader.read(url)
                 successful.append(url)
+                if search_hit:search_report['pages_checked']+=1
+                if external:
+                    final=normalized_link(page['url'],url)
+                    if not final or excluded(final):raise ValueError('Search candidate redirected to an excluded destination')
+                    title=conference_page(page)
+                    if title and final not in outbound:
+                        if not heartbeat():cancelled=True;break
+                        outbound.add(final);stats['links_found']+=1
+                        result=db.record_discovery(job['id'],seed,final,'needs_review',title,None,None,
+                            {'method':'searxng_crawl4ai','query':search_hit['query'],'engines':search_hit['engines'],
+                             'search_result_url':url,'verified_page':final,'relevance':'event page signal; official ownership unconfirmed'},
+                            'Search-discovered website inspected with Crawl4AI; review before adding to Sources')
+                        stats[{'needs_review':'needs_review','existing':'duplicates','rejected':'rejected','added':'sources_added'}[result['status']]]+=1
+                    else:stats['rejected']+=1
+                    continue
                 internal,candidates=classify_links(page,seed,settings)
                 if depth<depth_limit:
                     queue.extend((target,depth+1) for target in internal if target not in visited and (target not in recent or re.search(r'\.xml$|[?&]page=|/top/|/page/',target)) and target not in {u for u,_ in queue})
@@ -154,7 +201,8 @@ async def run_job(db,job,reader_factory=Crawl4AIReader):
     if errors and stats['pages_scanned'] and not any(stats[k] for k in ('sources_added','duplicates','needs_review')):status='failed'
     message=('Cancelled by administrator' if cancelled else 'Crawl limits reached; run again or increase limits' if limited else
              'Completed with some blocked or failed pages' if errors else 'Discovery completed')
-    db.update_crawl_job(job['id'],{**stats,'errors':errors[-50:],'status':status,'summary':message,
+    if search_report['enabled']:message+=f"; search: {search_report['requests']} queries, {search_report['results']} links, {search_report['pages_checked']} checked"
+    db.update_crawl_job(job['id'],{**stats,'config':config,'errors':errors[-50:],'status':status,'summary':message,
         'visited_urls':successful,'completed_at':datetime.now(timezone.utc).isoformat()})
     return {**stats,'status':status}
 
