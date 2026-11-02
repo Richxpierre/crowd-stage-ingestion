@@ -25,17 +25,21 @@ MONTHS = {name.lower(): n for n, names in enumerate([
 M = '(?:' + '|'.join(sorted(MONTHS, key=len, reverse=True)) + r')\.?'
 D = r'\d{1,2}(?:st|nd|rd|th)?'
 DATE_PATTERNS = [
+    re.compile(fr'(?P<d>{D})\s+(?P<m>{M})\s+(?P<y1>20\d{{2}})\s*(?:-|–|—|to)\s*(?P<d2>{D})\s+(?P<m2>{M})\s+(?P<y>20\d{{2}})', re.I),
     re.compile(fr'(?P<m>{M})\s+(?P<d>{D})(?:\s*,?\s*(?P<y1>20\d{{2}}))?\s*(?:-|–|—|to|through)\s*(?:(?P<m2>{M})\s+)?(?P<d2>{D})\s*,?\s*(?P<y>20\d{{2}})', re.I),
     re.compile(fr'(?P<d>{D})\s*(?:-|–|—|to)\s*(?P<d2>{D})\s+(?P<m>{M})\s*,?\s*(?P<y>20\d{{2}})', re.I),
     re.compile(fr'(?P<m>{M})\s+(?P<d>{D})\s*,?\s*(?P<y>20\d{{2}})', re.I),
     re.compile(fr'(?P<d>{D})\s+(?P<m>{M})\s*,?\s*(?P<y>20\d{{2}})', re.I),
 ]
 SKIP_PATH = re.compile(r'/(?:schedule|sessions?|speakers?|news|blog|press|privacy|legal|terms|exit|login|signup|sponsors?|exhibitors?)(?:/|$)', re.I)
-EVENT_WORD = re.compile(r'conference|convention|\bexpo\b|summit|trade.?show|festival|con\b|\bevent', re.I)
+EVENT_WORD = re.compile(r'conference|congress|symposium|convention|\bexpo\b|summit|trade.?show|festival|con\b|\bevent', re.I)
 
 
 def date_range(text):
     text = re.sub(r'\s+', ' ', text or '').strip()
+    text = re.sub(r'\bFeber\b','February',text,flags=re.I)
+    text = re.sub(r'\b(?:Mo|Di|Mi|Do|Fr|Sa|So)\.\s*,?\s*','',text)
+    text = re.sub(fr'(\d{{1,2}})\.\s+(?={M})',r'\1 ',text,flags=re.I)
     # ISO ranges, including time datetime attributes; reject ambiguous numeric dates.
     iso = re.findall(r'\b20\d{2}-\d{2}-\d{2}(?!\d)', text)
     if iso:
@@ -184,6 +188,11 @@ def parse_dated_heading(body,source,url):
     if SKIP_PATH.search(urlsplit(url).path):return []
     soup=BeautifulSoup(body,'html.parser')
     headings=soup.find_all('h1')
+    if not headings:
+        # Some page builders use H4 for the full event title/date block.
+        headings=[h for h in soup.find_all(['h2','h3','h4'])
+                  if date_range(h.get_text(' ',strip=True)) and
+                  re.search(r'conference|congress|symposium|convention|summit|expo|trade.?show',h.get_text(' ',strip=True),re.I)]
     if len(headings)!=1:return []
     title=headings[0].get_text(' ',strip=True)
     dates=date_range(title)
@@ -195,6 +204,42 @@ def parse_dated_heading(body,source,url):
     record.update(choose_image(soup,url,selectors=source.get('selectors')))
     record=_finish(record,source['publisher'],url+'|'+dates[0][:4])
     return [_evidence(record,source,'dated_event_heading',title)]
+
+
+def parse_event_hero(body,source,url):
+    """A single event heading and an unambiguous nearby date, without invented location."""
+    if SKIP_PATH.search(urlsplit(url).path):return []
+    soup=BeautifulSoup(body,'html.parser')
+    for node in soup.select('nav,header,footer,script,style,aside'):node.decompose()
+    headings=soup.find_all('h1')
+    if len(headings)!=1:return []
+    heading=headings[0];title=plain(heading.get_text(' ',strip=True),240)
+    if not EVENT_WORD.search(title) or re.search(r'cancelled|canceled|call for|deadline|registration',title,re.I):return []
+    context=heading
+    for _ in range(4):
+        if not context.parent or context.parent.name in ('body','html'):break
+        context=context.parent
+        text=context.get_text(' ',strip=True)
+        if len(text)>1800 or len(context.find_all('h1'))!=1:break
+        # The hero must be free of submission/registration/publication date ambiguity.
+        if re.search(r'deadline|submission|registration|published|updated|copyright|call for',text,re.I):continue
+        dates=date_range(text)
+        if not dates:continue
+        # All independently dated short elements must agree or be endpoints of this range.
+        observed=[]
+        for n in context.find_all(['p','span','time','div']):
+            value=n.get('datetime') or n.get('content') or n.get_text(' ',strip=True)
+            if len(value)>250:continue
+            found=date_range(value)
+            if found:observed.append(found)
+        if any(d!=dates and not(d[0]==d[1] and d[0] in dates) for d in observed):continue
+        record=dict(title=title,start_date=dates[0],end_date=dates[1],timezone=None,
+            venue=None,city=None,country=None,region=None,format='unknown',categories=[],summary=None,
+            event_url=url,official_url=url,registration_url=None,cfp_url=None,cfp_deadline=None,status='upcoming',source_url=url)
+        record.update(choose_image(soup,url,selectors=source.get('selectors')))
+        record=_finish(record,source['publisher'],url+'|'+dates[0][:4])
+        return [_evidence(record,source,'dated_event_hero',text)]
+    return []
 
 
 def parse_page(body, source, url):
@@ -213,6 +258,8 @@ def parse_page(body, source, url):
             records,method=parse_sections(body,source,url),'dated_html'
         if not records:
             records,method=parse_dated_heading(body,source,url),'dated_event_heading'
+        if not records:
+            records,method=parse_event_hero(body,source,url),'dated_event_hero'
     return [_evidence(r,source,method,r.get('extraction',{}).get('evidence') or
                       f"{r['title']} | {r['start_date']} – {r['end_date']} | {r.get('venue') or ''}") for r in records]
 
@@ -231,8 +278,11 @@ def discover_links(body, url, root, website_only=False):
     soup=BeautifulSoup(body,'html.parser')
     found=[]
     for el in soup.find_all(['a','link']):
+        href=el.get('href')
+        # A missing href is text, never a relative URL such as /More or /Download.
+        if not isinstance(href,str) or not href.strip() or href.startswith(('#','mailto:','tel:','javascript:')):continue
         if website_only and re.search(r'calendar|rss|atom|xml',str(el.get('type','')),re.I):continue
-        target=clean_url(urljoin(url,el.get('href') or el.get_text(' ',strip=True)))
+        target=clean_url(urljoin(url,href))
         if not target or not relevant_url(target,root) or target==url:
             continue
         if website_only and is_feed_url(target) and 'sitemap' not in urlsplit(target).path.lower():continue
@@ -276,6 +326,10 @@ def collect_automatic(fetcher, source):
                         body=rendered
             records.extend(parsed)
             report['methods'].extend(r['extraction']['method'] for r in parsed)
+            if len(parsed)==1 and parsed[0]['extraction']['method'] in ('dated_event_hero','dated_event_heading'):
+                # A complete single-edition header is enough; do not spend the remaining
+                # budget crawling registration, programme and footer pages for the same event.
+                break
             for link in discover_links(body,actual,root,website_only=website_only):
                 if link not in visited and link not in queue:
                     queue.append(link)
