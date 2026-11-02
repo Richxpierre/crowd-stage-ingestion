@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 import json
 import os
+import re
 import time
 from urllib.parse import urlsplit
 import requests
@@ -76,7 +77,7 @@ def selected(page,selector,seed,external=False):
         if node.name!='a' or not node.get('href'):continue
         from urllib.parse import urljoin
         url=result_url(urljoin(page['url'],node['href']))
-        if not url or url==page['url']:continue
+        if not url or url==page['url'] or re.search(r'\.(?:xml|rss|ics|pdf|png|jpe?g|gif|webp|svg|zip|mp4)$',urlsplit(url).path,re.I):continue
         if external:
             if same_owner(url,seed) or excluded(url):continue
         elif not same_owner(url,seed):continue
