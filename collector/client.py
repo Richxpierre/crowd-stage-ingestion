@@ -93,3 +93,43 @@ class Client:
         return self.request('POST','rpc/record_conference_discovery',json={'p_job_id':job_id,'p_listing_url':listing,
             'p_official_url':official,'p_status':status,'p_title':title,'p_start':start,'p_end':end,'p_evidence':evidence,'p_reason':reason})
 
+    def enqueue_frontier(self,job,generation,tasks):
+        for offset in range(0,len(tasks),100):
+            rows=[{**item,'target_id':job['target_id'],'generation':generation} for item in tasks[offset:offset+100]]
+            self.request('POST','conference_crawl_frontier',params={'on_conflict':'target_id,generation,url,task_kind'},json=rows,
+                headers={'Prefer':'resolution=ignore-duplicates,return=minimal'})
+
+    def claim_frontier(self,job_id,kind,limit):
+        return self.request('POST','rpc/claim_conference_frontier',json={'p_job_id':job_id,'p_kind':kind,'p_limit':limit})
+
+    def complete_frontier_sources(self,job_id,ids):
+        return self.request('POST','rpc/complete_conference_frontier_sources',json={'p_job_id':job_id,'p_task_ids':ids})
+
+    def finish_frontier(self,job_id,task_id):
+        from datetime import timedelta
+        now=datetime.now(timezone.utc)
+        return self.request('PATCH','conference_crawl_frontier',params={'id':'eq.'+task_id,'lease_job_id':'eq.'+job_id,'status':'eq.leased'},
+            json={'status':'done','completed_at':now.isoformat(),'available_at':(now+timedelta(days=7)).isoformat(),'lease_until':None})
+
+    def fail_frontier(self,job_id,item,error):
+        from datetime import timedelta
+        return self.request('PATCH','conference_crawl_frontier',params={'id':'eq.'+item['id'],'lease_job_id':'eq.'+job_id,'status':'eq.leased'},
+            json={'status':'error' if item['attempts']>=3 else 'queued','last_error':error,
+                  'available_at':(datetime.now(timezone.utc)+timedelta(minutes=5*item['attempts'])).isoformat(),'lease_until':None})
+
+    def frontier_progress(self,job_id):
+        return self.request('POST','rpc/conference_frontier_progress',json={'p_job_id':job_id})
+
+    def frontier_errors(self,target_id,generation):
+        return self.request('GET','conference_crawl_frontier',params={'target_id':'eq.'+target_id,'generation':'eq.'+generation,
+            'status':'eq.error','select':'url,last_error','limit':'50'})
+
+    def continue_bulk_crawl(self,job_id):
+        return self.request('POST','rpc/continue_conference_bulk_crawl',json={'p_job_id':job_id})
+
+    def prepare_bulk_handoff(self,job_id,count):
+        rows=self.request('GET','conference_crawl_jobs',params={'id':'eq.'+job_id,'status':'eq.queued','select':'config'})
+        if not rows:return False
+        return bool(self.request('PATCH','conference_crawl_jobs',params={'id':'eq.'+job_id,'status':'eq.queued'},
+            json={'config':{**rows[0]['config'],'bulk_worker_handoffs':count}},headers={'Prefer':'return=representation'}))
+

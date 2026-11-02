@@ -15,6 +15,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   discover:
+    permissions:
+      contents: read
+      actions: write
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -52,10 +55,11 @@ jobs:
         run: python scripts/start_search_service.py --job-file "$RUNNER_TEMP/crawl-job.json"
       - name: Collect organizer website-button URLs
         if: steps.claim.outputs.has_job == 'true'
-        run: python -m collector.discovery --job-file "$RUNNER_TEMP/crawl-job.json"
+        run: python -m collector.discovery --job-file "$RUNNER_TEMP/crawl-job.json" --drain-bulk
         env:
           CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/crowdstage-crawler
           SEARXNG_URL: http://127.0.0.1:8888
+          BULK_WORKFLOW_TOKEN: ${{ github.token }}
       - name: Stop private search service
         if: always() && steps.claim.outputs.has_job == 'true'
         run: docker rm -f crowdstage-search || true

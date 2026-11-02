@@ -99,6 +99,9 @@ def classify_links(page,seed,settings):
 
 
 async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
+    if job['config'].get('settings',{}).get('adapter') in ('sessionize','conference_monkey'):
+        from .bulk_discovery import run_bulk_job
+        return await run_bulk_job(db,job)
     config=job['config'];settings=config.get('settings') or {};seed=config['url']
     page_limit=max(1,min(int(config.get('max_pages',10)),100))
     source_limit=max(1,min(int(config.get('max_sources',10)),50))
@@ -213,6 +216,7 @@ def main():
     group.add_argument('--claim-only',help='Claim a job and write its snapshot for the worker')
     group.add_argument('--job-file',help='Process a previously claimed job snapshot')
     parser.add_argument('--job-id',help='Claim only this queued job for a scoped manual run')
+    parser.add_argument('--drain-bulk',action='store_true',help='Continue bulk batches for up to ten minutes, leaving unfinished work queued')
     args=parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     if args.job_file and args.job_id:parser.error('--job-id cannot be combined with --job-file')
@@ -224,7 +228,22 @@ def main():
         return
     if not job or not job.get('id'):
         LOG.info('No queued or scheduled crawl jobs');return
-    try:LOG.info('Discovery result: %s',asyncio.run(run_job(db,job)))
+    try:
+        worker_deadline=time.monotonic()+600
+        while True:
+            bulk=job['config'].get('settings',{}).get('adapter') in ('sessionize','conference_monkey')
+            if args.drain_bulk and bulk:job['config']['bulk_batch_seconds']=max(1,min(180,worker_deadline-time.monotonic()))
+            result=asyncio.run(run_job(db,job));LOG.info('Discovery result: %s',result)
+            if not(args.drain_bulk and bulk) or result.get('status')=='cancelled' or job['config'].get('bulk_probe') is True:break
+            next_id=db.continue_bulk_crawl(job['id'])
+            if not next_id:break
+            if time.monotonic()>=worker_deadline:
+                from .handoff import dispatch_bulk_continuation
+                try:LOG.info('Bulk handoff requested: %s',dispatch_bulk_continuation(db,job,next_id))
+                except Exception as exc:LOG.error('%s',exc)
+                break
+            job=db.claim_crawl_job(next_id)
+            if not job:break
     except Exception as exc:
         db.update_crawl_job(job['id'],{'status':'failed','summary':str(exc)[:1000],
             'completed_at':datetime.now(timezone.utc).isoformat()})
