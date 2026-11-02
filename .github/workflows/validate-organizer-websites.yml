@@ -1,0 +1,71 @@
+name: Validate organizer websites and map parser settings
+on:
+  schedule:
+    - cron: '4-59/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      validation_id:
+        description: 'Optional queued validation ID'
+        required: false
+        type: string
+      dry_run:
+        description: 'Save evidence for review without adding Sources'
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: crowdstage-source-validation
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT }}
+      SEARXNG_URL: http://127.0.0.1:8888
+      CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/crowdstage-validator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Check validation queue
+        id: pending
+        env:
+          VALIDATION_ID: ${{ inputs.validation_id }}
+        run: |
+          python - <<'PY'
+          import os
+          from collector.client import Client
+          # Include running rows so a terminated worker's stale claim is moved
+          # to review even when there are no other queued websites.
+          params={'select':'id','status':'in.(queued,running)','limit':'1'}
+          if os.environ.get('VALIDATION_ID'): params['id']='eq.'+os.environ['VALIDATION_ID']
+          rows=Client().request('GET','conference_source_validations',params=params)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out: out.write('has_work='+str(bool(rows)).lower()+'\n')
+          PY
+      - if: steps.pending.outputs.has_work == 'true'
+        run: pip install -r requirements-crawler.txt
+      - if: steps.pending.outputs.has_work == 'true'
+        run: python -m playwright install --with-deps chromium
+      - if: steps.pending.outputs.has_work == 'true'
+        run: python scripts/start_search_service.py
+      - name: Validate queued websites
+        if: steps.pending.outputs.has_work == 'true'
+        env:
+          VALIDATION_ID: ${{ inputs.validation_id }}
+          VALIDATION_DRY_RUN: ${{ inputs.dry_run }}
+        shell: bash
+        run: |
+          args=(--limit 5)
+          if [ -n "$VALIDATION_ID" ]; then args+=(--validation-id "$VALIDATION_ID"); fi
+          if [ "$VALIDATION_DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          python -m collector.source_validation "${args[@]}"
+      - if: always() && steps.pending.outputs.has_work == 'true'
+        run: docker rm -f crowdstage-search || true
+

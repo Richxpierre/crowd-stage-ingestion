@@ -5,6 +5,29 @@ on:
 permissions:
   contents: read
 jobs:
+  source-validator-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-crawler.txt
+      - run: python -m playwright install --with-deps chromium
+      - run: python scripts/start_search_service.py
+      - run: python -m scripts.probe_source_validator
+        env:
+          SEARXNG_URL: http://127.0.0.1:8888
+          COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: source-validator-probe
+          path: validator-probe.json
+      - if: always()
+        run: docker rm -f crowdstage-search || true
   test:
     runs-on: ubuntu-24.04
     steps:
