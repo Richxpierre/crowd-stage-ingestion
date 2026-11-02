@@ -62,5 +62,16 @@ class PlannerTests(unittest.TestCase):
         result=asyncio.run(run_mapped_job(db,job,Reader))
         self.assertEqual(result['needs_review'],1);self.assertEqual(db.records[0][2],'https://conf.org/')
         self.assertEqual(db.records[0][3],'needs_review')
+    def test_quota_and_temporary_rate_limits_are_distinguished(self):
+        class Response:
+            status_code=429
+            def __init__(self,code):self.code=code
+            def json(self):return {'error':{'code':self.code,'message':'untrusted provider text'}}
+        class Session:
+            def __init__(self,code):self.code=code
+            def post(self,*a,**kw):return Response(self.code)
+        with patch.dict(os.environ,{'OPENAI_API_KEY':'test-key'}):
+            for code,message in [('insufficient_quota','quota unavailable'),('rate_limit_exceeded','rate limited')]:
+                with self.assertRaisesRegex(RuntimeError,message):propose(Reader.pages[SEED],[],Session(code))
 
 if __name__=='__main__':unittest.main()
