@@ -51,10 +51,15 @@ def propose(page,history,session=None):
             headers={'Authorization':'Bearer '+key},timeout=45,allow_redirects=False)
         if response.status_code!=200:
             # Log only recognized error codes; never echo raw provider messages or secrets.
-            try:code=response.json().get('error',{}).get('code')
-            except (ValueError,AttributeError):code=None
-            if code=='insufficient_quota':raise RuntimeError('OpenAI API quota unavailable (insufficient_quota); check API billing and project budget')
-            if response.status_code==429:raise RuntimeError('OpenAI rate limited the request (HTTP 429); retry after checking project rate limits')
+            try:
+                error=response.json().get('error',{})
+                code=error.get('code');kind=error.get('type')
+            except (ValueError,AttributeError):code=None;kind=None
+            quota_codes={'insufficient_quota','credit_balance_exhausted','organization_spend_limit_exceeded','project_spend_limit_exceeded','organization_usage_limit_exceeded'}
+            if code in quota_codes:raise RuntimeError(f'OpenAI API quota unavailable ({code}); check API billing and project budget')
+            if kind=='insufficient_quota':raise RuntimeError('OpenAI API quota unavailable (insufficient_quota); check API billing and project budget')
+            if code in ('rate_limit_exceeded','slow_down') or kind=='rate_limit_error':raise RuntimeError('OpenAI temporary rate limit (rate_limit_error); check project request/token limits')
+            if response.status_code==429:raise RuntimeError('OpenAI request limited (HTTP 429); check project quota and rate limits')
             raise RuntimeError(f'OpenAI request failed (HTTP {response.status_code}); check the key, model access and API billing')
         data=response.json()
         if data.get('status')!='completed':raise RuntimeError('OpenAI response was incomplete; no plan saved')

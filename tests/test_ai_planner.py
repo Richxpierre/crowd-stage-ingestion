@@ -71,7 +71,7 @@ class PlannerTests(unittest.TestCase):
             def __init__(self,code):self.code=code
             def post(self,*a,**kw):return Response(self.code)
         with patch.dict(os.environ,{'OPENAI_API_KEY':'test-key'}):
-            for code,message in [('insufficient_quota','quota unavailable'),('rate_limit_exceeded','rate limited')]:
+            for code,message in [('insufficient_quota','quota unavailable'),('credit_balance_exhausted','quota unavailable'),('project_spend_limit_exceeded','quota unavailable'),('rate_limit_exceeded','temporary rate limit')]:
                 with self.assertRaisesRegex(RuntimeError,message):propose(Reader.pages[SEED],[],Session(code))
 
 if __name__=='__main__':unittest.main()
