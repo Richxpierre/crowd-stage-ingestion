@@ -46,11 +46,19 @@ jobs:
         run: pip install -r requirements-crawler.txt
       - if: steps.claim.outputs.has_job == 'true'
         run: python -m playwright install --with-deps chromium
+      - name: Start private SearXNG search assistance when enabled
+        if: steps.claim.outputs.has_job == 'true'
+        continue-on-error: true
+        run: python scripts/start_search_service.py --job-file "$RUNNER_TEMP/crawl-job.json"
       - name: Collect organizer website-button URLs
         if: steps.claim.outputs.has_job == 'true'
         run: python -m collector.discovery --job-file "$RUNNER_TEMP/crawl-job.json"
         env:
           CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/crowdstage-crawler
+          SEARXNG_URL: http://127.0.0.1:8888
+      - name: Stop private search service
+        if: always() && steps.claim.outputs.has_job == 'true'
+        run: docker rm -f crowdstage-search || true
       - name: Record worker setup failure
         if: failure() && steps.claim.outputs.has_job == 'true'
         run: |

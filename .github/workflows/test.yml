@@ -19,6 +19,21 @@ jobs:
         env:
           RUN_RENDER_TESTS: '1'
       - run: python -m compileall -q collector scripts
+  search-service:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python scripts/start_search_service.py
+      - run: python -m unittest discover -s tests -p test_search.py -v
+        env:
+          SEARXNG_URL: http://127.0.0.1:8888
+          RUN_SEARXNG_TESTS: '1'
+      - if: always()
+        run: docker rm -f crowdstage-search || true
   crawler-sdk:
     runs-on: ubuntu-24.04
     steps:
