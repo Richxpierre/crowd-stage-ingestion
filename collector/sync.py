@@ -55,7 +55,7 @@ def preserve_existing_identity(db, source, records):
     return records
 
 
-def sync_one(db, source):
+def sync_one(db, source, selected_passes=None, parse_only=False):
     sid = source['id']
     counts = {'fetched_count':0,'created_count':0,'updated_count':0,'unchanged_count':0,'skipped_count':0}
     run_id = db.create_run(sid)
@@ -73,7 +73,31 @@ def sync_one(db, source):
             raise ValueError('Unsupported direct URL kind')
         fetcher = Fetcher(os.environ.get('COLLECTOR_USER_AGENT',''),
                           min_delay_seconds=source.get('min_delay_seconds',2))
-        records,code,headers,report=collect_source(fetcher,source)
+        from .automatic import is_feed_url
+        use_passes=(source['kind']=='auto' and not is_feed_url(source['url']) and os.environ.get('SOURCE_PARSE_PASSES')=='1')
+        if use_passes or selected_passes or parse_only:
+            from .parse_passes import collect_passes,assemble,retain_known_optional,PASS_TYPES
+            passes,report=collect_passes(fetcher,source,selected_passes,
+                on_result=lambda kind,result:db.save_parse_pass(run_id,sid,kind,result))
+            records=assemble(passes,source)
+            for kind,result in passes.items():db.save_parse_pass(run_id,sid,kind,result)
+            if records:records=retain_known_optional(records,db.observations(sid),source['publisher'])
+            report['events_found']=len(records)
+            code,headers=200,{}
+            if parse_only or selected_passes and set(selected_passes)!=set(PASS_TYPES):
+                # A focused rerun is an extraction preview. Only a complete refresh
+                # assembles event records, avoiding joins with stale saved passes.
+                previous=source.get('discovery_report') or {}
+                saved_report={**report,'parse_passes':{**previous.get('parse_passes',{}),**passes}}
+                db.update_source(sid,{'last_attempt_at':utc_now(),'discovery_report':saved_report})
+                db.update_run(run_id,{'status':'unchanged','completed_at':utc_now()})
+                if any(p['status']=='failed' for p in passes.values()):
+                    raise ValueError('Selected parse pass failed; see its saved error details')
+                return counts
+            if passes.get('event_date',{}).get('status')=='failed':
+                raise ValueError('Event date pass failed; other pass results were saved')
+        else:
+            records,code,headers,report=collect_source(fetcher,source)
         if code == 304:
             db.update_source(sid, {'last_success_at':utc_now(),'last_attempt_at':utc_now(),
                                    'last_error':None,'next_check_at':next_check(source)})
@@ -122,11 +146,27 @@ def sync_one(db, source):
 def main():
     parser = argparse.ArgumentParser(description='Refresh CrowdStage conferences from official URLs only')
     parser.add_argument('--slug',help='Force refresh a single approved source, even if not yet due')
+    parser.add_argument('--parse-only',action='store_true',help='Save four-pass extraction evidence without changing event records; requires --slug')
     parser.add_argument('--limit-sources',type=int,default=int(os.environ.get('MAX_SOURCES','100')))
     args = parser.parse_args()
+    if args.parse_only and not args.slug:parser.error('--parse-only requires a specific --slug')
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
     db = Client()
-    sources = db.sources(slug=args.slug)[:max(0,args.limit_sources)]
+    # Manual pass requests share the same guarded worker and approval rules.
+    # A focused request never enables a paused/unapproved source.
+    handled=set()
+    for _ in range(0 if args.slug else 3):
+        request=db.claim_parse_request()
+        if not request:break
+        handled.add(request['source_id'])
+        try:
+            selected=db.sources(slug=request['source_slug'])
+            if not selected:raise PermissionError('Source is paused or no longer approved')
+            sync_one(db,selected[0],request['pass_types'])
+            db.finish_parse_request(request['id'],'success')
+        except Exception as exc:
+            db.finish_parse_request(request['id'],'failed',str(exc)[:750])
+    sources = [s for s in db.sources(slug=args.slug) if s['id'] not in handled][:max(0,args.limit_sources)]
     LOG.info('%d direct sources selected',len(sources))
     failures = 0
     run_deadline=time.monotonic()+max(150,min(int(os.environ.get('MAX_RUN_SECONDS','600')),1800))
@@ -135,7 +175,7 @@ def main():
             LOG.warning('Run time budget reached; %d due sources deferred to the next scheduled run',len(sources)-index)
             break
         try:
-            LOG.info('%s %s',s['slug'],json.dumps(sync_one(db,s)))
+            LOG.info('%s %s',s['slug'],json.dumps(sync_one(db,s,parse_only=args.parse_only)))
         except Exception:
             failures += 1
     if failures:

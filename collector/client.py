@@ -58,6 +58,18 @@ class Client:
             'p_source_id':source_id, 'p_records':records
         })
 
+    def save_parse_pass(self, run_id, source_id, kind, result):
+        self.request('POST','conference_source_parse_results',params={'on_conflict':'run_id,pass_type'},
+            json={'run_id':run_id,'source_id':source_id,'pass_type':kind,**result},
+            headers={'Prefer':'resolution=merge-duplicates,return=minimal'})
+
+    def claim_parse_request(self):
+        return self.request('POST','rpc/claim_conference_source_parse',json={})
+
+    def finish_parse_request(self, request_id, status, message=None):
+        self.request('PATCH','conference_source_parse_requests',params={'id':'eq.'+request_id},
+            json={'status':status,'completed_at':datetime.now(timezone.utc).isoformat(),'error_message':message})
+
     def upsert_candidates(self, rows):
         return self.request('POST', 'conference_url_candidates', params={'on_conflict':'url'},
             json=rows, headers={'Prefer':'resolution=ignore-duplicates,return=minimal'})
