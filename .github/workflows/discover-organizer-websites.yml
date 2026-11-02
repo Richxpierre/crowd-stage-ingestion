@@ -56,6 +56,8 @@ jobs:
         env:
           CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/crowdstage-crawler
           SEARXNG_URL: http://127.0.0.1:8888
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_CRAWLER_MODEL: ${{ vars.OPENAI_CRAWLER_MODEL || 'gpt-4.1-mini' }}
       - name: Stop private search service
         if: always() && steps.claim.outputs.has_job == 'true'
         run: docker rm -f crowdstage-search || true

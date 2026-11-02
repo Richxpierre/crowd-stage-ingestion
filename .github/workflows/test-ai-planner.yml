@@ -1,0 +1,27 @@
+name: Test AI crawl planner with saved key
+on:
+  push:
+    branches: [feat/ai-crawl-planner]
+permissions:
+  contents: read
+jobs:
+  live-planner:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt -r requirements-crawler.txt
+      - run: python -m playwright install --with-deps chromium
+      - run: python -m scripts.probe_ai_planner
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_CRAWLER_MODEL: ${{ vars.OPENAI_CRAWLER_MODEL || 'gpt-4.1-mini' }}
+          CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/ai-crawler
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-ai-crawl-map
+          path: ai-plan-report.json
