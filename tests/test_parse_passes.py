@@ -1,5 +1,6 @@
 import json
 import unittest
+from copy import deepcopy
 from collector.parse_passes import collect_passes,extract_pass,assemble,retain_known_optional,PASS_TYPES
 from unittest.mock import patch
 
@@ -13,6 +14,24 @@ class Fetcher:
     def fetch(self,url):self.calls.append(url);return 200,self.body,{}
 
 class ParsePassTests(unittest.TestCase):
+    def test_progress_is_saved_before_fetch_and_for_each_extracted_page(self):
+        updates=[]
+        fetcher=Fetcher(page(node(startDate='2027-04-26')))
+        def emit(kind,result):updates.append((kind,deepcopy(result),len(fetcher.calls)))
+        report,_=collect_passes(fetcher,SOURCE,on_result=emit)
+        self.assertTrue(all(value['progress_stage']=='collecting' and calls==0 for _,value,calls in updates[:4]))
+        date_updates=[v for k,v,_ in updates if k=='event_date']
+        self.assertTrue(any(v['progress_stage']=='extracting' and v['pages_done']==1 and v['pages_total']==1 for v in date_updates))
+        self.assertEqual(report['event_date']['progress_stage'],'complete')
+        self.assertTrue(report['event_date']['heartbeat_at'])
+
+    def test_failed_pass_finishes_progress_and_keeps_error(self):
+        source={**SOURCE,'selectors':{**SOURCE['selectors'],'parse_passes':{'event_location':{'selectors':{'city':'['}}}}}
+        report,_=collect_passes(Fetcher(page(node(startDate='2027-04-26'))),source)
+        result=report['event_location']
+        self.assertEqual((result['status'],result['progress_stage']),('failed','complete'))
+        self.assertTrue(result['errors'][0]['message'])
+
     def test_optional_passes_survive_missing_dates(self):
         body=page(node(location={'name':'Hall','address':{'addressLocality':'Paris'}},
                        offers={'price':'0','priceCurrency':'EUR'},keywords='cloud, security'))

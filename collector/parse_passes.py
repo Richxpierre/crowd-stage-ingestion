@@ -102,7 +102,7 @@ def overrides(kind, body, config, url):
         if value is not None: values[field]=value
     return nonempty(values)
 
-def extract_pass(kind, pages, source, config):
+def extract_pass(kind, pages, source, config, on_page=None):
     results=[]
     for url,body in pages.items():
         digest=hashlib.sha256(body).hexdigest()
@@ -160,6 +160,7 @@ def extract_pass(kind, pages, source, config):
         if kind=='event_details' and (source.get('selectors') or {}).get('single_event'):
             image=choose_image(body,url,selectors=source.get('selectors'))
             add(source['name'],None,image,'page_image',source['url'])
+        if on_page:on_page()
     return results
 
 def collect_passes(fetcher, source, selected=None, on_result=None):
@@ -171,6 +172,13 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
     if not root: raise ValueError('Source must be HTTPS')
     fetcher.deadline=time.monotonic()+150
     max_pages=max(1,min(int((source.get('selectors') or {}).get('max_pages',8)),20))
+    live={kind:dict(status='running',started_at=now(),results=[],errors=[],
+        progress_stage='collecting',pages_done=0,pages_total=max_pages,heartbeat_at=now()) for kind in selected}
+    def publish_collection():
+        for kind,item in live.items():
+            item.update(pages_done=len(set(pages)|set(errors)),heartbeat_at=now())
+            if on_result:on_result(kind,dict(item))
+    publish_collection()
     def load(url):
         nonlocal rendered_count,stop_fetching
         if url in pages or url in errors:return
@@ -194,6 +202,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
             from .fetch import UnsafeDestination
             if isinstance(exc,UnsafeDestination) or getattr(getattr(exc,'response',None),'status_code',None)==429:
                 stop_fetching=True
+        publish_collection()
     load(root)
     # Shared crawl snapshot, fetched once. Do not stop after finding dates:
     # linked venue/about/ticket pages can supply the other passes.
@@ -212,19 +221,23 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
         load(url)
     for kind in selected:
         cfg=options.get(kind) or {}; t=time.monotonic()
-        item=dict(status='running',started_at=now(),results=[],errors=[])
+        item={**live[kind],'progress_stage':'extracting','pages_done':0,'pages_total':0,'heartbeat_at':now()}
         if on_result:on_result(kind,item)
         try:
             if cfg.get('enabled',True) is False:item['status']='disabled'
             else:
                 targets=cfg.get('page_urls') or list(dict.fromkeys([*pages,*errors]))
                 chosen={u:pages[u] for u in targets if u in pages}
+                item['pages_total']=len(chosen)
                 item['errors']=[{'page_url':u,'message':errors.get(u,'Page was not fetched within the page budget')} for u in targets if u not in pages]
-                item['results']=extract_pass(kind,chosen,source,cfg)
+                def page_done():
+                    item.update(pages_done=item['pages_done']+1,heartbeat_at=now())
+                    if on_result:on_result(kind,dict(item))
+                item['results']=extract_pass(kind,chosen,source,cfg,on_page=page_done)
                 item['status']='partial' if item['results'] and item['errors'] else 'success' if item['results'] else 'failed' if item['errors'] else 'missing'
         except Exception as exc:
             item.update(status='failed',errors=[{'message':str(exc)[:500]}])
-        item.update(completed_at=now(),duration_ms=round((time.monotonic()-t)*1000))
+        item.update(completed_at=now(),duration_ms=round((time.monotonic()-t)*1000),progress_stage='complete',heartbeat_at=now())
         report[kind]=item
         if on_result:on_result(kind,item)
     return report,dict(mode='four_pass',started_at=started,pages=list(pages),pages_checked=len(pages),
