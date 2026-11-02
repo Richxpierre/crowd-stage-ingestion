@@ -44,6 +44,8 @@ Verification:
 - Event extraction now recognizes unambiguous event-heading/date blocks without
   requiring address markup, Austrian February dates, and complete dated H4 headings.
   Missing hrefs no longer create fake `/More` or `/Download` navigation URLs.
+- Historical edition pages also try the organizer homepage for a current edition.
+  A genuinely past-only site remains unchanged, and cancellation observations are retained.
 
 GitHub cron remains best-effort. Handoffs reduce dependence on cron between active
 batches; this does not claim a guaranteed schedule or unlimited ingestion capacity.

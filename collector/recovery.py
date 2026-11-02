@@ -1,6 +1,7 @@
 """Recover a failed feed/page by discovering the organizer's actual website."""
 from __future__ import annotations
 import re
+from datetime import datetime,timezone
 import time
 from urllib.parse import urlsplit,urlunsplit
 import tldextract
@@ -49,6 +50,7 @@ def collect_source(fetcher,source):
     fetcher.deadline=time.monotonic()+150
     report={'mode':'primary','attempts':[],'errors':[]}
     code,headers=200,{}
+    historical=[]
     try:
         if source['kind']=='auto':
             records,details=collect_automatic(fetcher,source)
@@ -65,7 +67,12 @@ def collect_source(fetcher,source):
                      parse_ics(body,source) if source['kind']=='ics' else
                      parse_official_html(body,source) if source['kind']=='official_html' else parse_jsonld(body,source))
         report['attempts'].append({'url':source['url'],'method':source['kind'],'status':'success' if records else 'empty'})
-        if records:return records,code,headers,report
+        if records:
+            today=datetime.now(timezone.utc).date().isoformat()
+            if any(r['end_date']>=today or r.get('status')=='cancelled' for r in records):return records,code,headers,report
+            # An old edition link can still lead to this year's conference at the homepage.
+            historical=records
+            report['historical_records']=len(records)
         if any(issue.get('http_status')==429 for issue in report.get('errors',[])):
             raise PermissionError('Website rate limit reached; retry after cooldown')
         detail=report.get('errors',[])
@@ -84,6 +91,7 @@ def collect_source(fetcher,source):
             report['attempts'][-1]=attempt
         else:report['attempts'].append(attempt)
     if (source.get('selectors') or {}).get('website_fallback',True) is False:
+        if historical:return historical,code,headers,{**report,'mode':'past_only'}
         raise RecoveryFailure('No valid Event records. Primary collection failed; website fallback is disabled: '+primary_error,report)
     try:candidates=fallback_urls(source)
     except ValueError as exc:raise RecoveryFailure(str(exc),report) from exc
@@ -96,16 +104,18 @@ def collect_source(fetcher,source):
             records,details=collect_automatic(fetcher,fallback)
             report['attempts'].append({'url':url,'method':'automatic_website','status':'success' if records else 'empty'})
             report['errors'].extend(details.get('errors',[]))
-            if records:
+            if records and any(r['end_date']>=datetime.now(timezone.utc).date().isoformat() or r.get('status')=='cancelled' for r in records):
                 report.update({key:val for key,val in details.items() if key!='errors'})
                 report.update(mode='website_fallback',fallback_url=url,configured_url=source['url'])
                 return records,200,{},report
+            if records:historical=historical or records
         except Exception as exc:
             if _terminal(exc):
                 report['attempts'].append({'url':url,'status':'blocked','message':str(exc)[:250]})
                 # Robots or unsafe destinations cannot be worked around with another host.
                 raise RecoveryFailure('Website recovery blocked: '+str(exc),report) from exc
             report['attempts'].append({'url':url,'status':'failed','message':str(exc)[:250]})
+    if historical:return historical,code,headers,{**report,'mode':'past_only'}
     raise RecoveryFailure('No valid Event records. Feed/page failed and website discovery found no usable events. '+primary_error,report)
 
 
