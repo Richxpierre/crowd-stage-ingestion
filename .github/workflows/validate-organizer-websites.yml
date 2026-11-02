@@ -42,7 +42,9 @@ jobs:
           python - <<'PY'
           import os
           from collector.client import Client
-          params={'select':'id','status':'eq.queued','limit':'1'}
+          # Include running rows so a terminated worker's stale claim is moved
+          # to review even when there are no other queued websites.
+          params={'select':'id','status':'in.(queued,running)','limit':'1'}
           if os.environ.get('VALIDATION_ID'): params['id']='eq.'+os.environ['VALIDATION_ID']
           rows=Client().request('GET','conference_source_validations',params=params)
           with open(os.environ['GITHUB_OUTPUT'],'a') as out: out.write('has_work='+str(bool(rows)).lower()+'\n')
@@ -66,3 +68,4 @@ jobs:
           python -m collector.source_validation "${args[@]}"
       - if: always() && steps.pending.outputs.has_work == 'true'
         run: docker rm -f crowdstage-search || true
+
