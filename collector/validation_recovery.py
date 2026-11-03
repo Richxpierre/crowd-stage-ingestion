@@ -20,8 +20,10 @@ def scope_url(url,base):
     one,two=urlsplit(url),urlsplit(base)
     host=(two.hostname or '').removeprefix('www.')
     if host=='sites.google.com':
-        tenant='/'.join(two.path.strip('/').split('/')[:2])
-        return (one.hostname or '').removeprefix('www.')==host and one.path.strip('/').startswith(tenant+'/') or (one.hostname or '').removeprefix('www.')==host and one.path.strip('/')==tenant
+        parts=two.path.strip('/').split('/')
+        if len(parts)<2 or parts[0] not in ('view','site'):return False
+        tenant='/'.join(parts[:2]);path=one.path.strip('/')
+        return (one.hostname or '').removeprefix('www.')==host and (path.startswith(tenant+'/') or path==tenant)
     if any(host==shared or host.endswith('.'+shared) for shared in SHARED_HOSTS):
         return (one.hostname or '').removeprefix('www.')==host
     return True

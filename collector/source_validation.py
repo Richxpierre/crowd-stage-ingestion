@@ -163,6 +163,14 @@ async def _validate_site(candidate,reader,search):
                 # A selector is safe across configured pages only when every page
                 # independently offers the same unique field mapping.
                 if mappings and all(m==mappings[0] for m in mappings):config['selectors']=mappings[0]
+            if config['selectors']:
+                trial=extract_pass(kind,{u:pages[u] for u in config['page_urls']},source,config)[:50]
+                # A unique CSS node can still be a deadline or footer address.
+                # Generated overrides must reproduce independently extracted facts.
+                for field in list(config['selectors']):
+                    expected={json.dumps(r['fields'][field],sort_keys=True) for r in initial if field in r['fields']}
+                    proposed={json.dumps(r['fields'][field],sort_keys=True) for r in trial if field in r['fields']}
+                    if len(expected)!=1 or proposed!=expected:config['selectors'].pop(field)
             extracted=extract_pass(kind,{u:pages[u] for u in config['page_urls']},source,config)[:50]
             plan[kind]=config
             results[kind]={'status':'success' if extracted else 'missing','results':extracted,'errors':[]}

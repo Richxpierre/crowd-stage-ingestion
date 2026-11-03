@@ -27,6 +27,12 @@ class EvidenceTests(unittest.TestCase):
   self.assertFalse(scope_url('https://sites.google.com/view/other','https://sites.google.com/view/our-event'))
 
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
+ async def test_generated_date_selector_cannot_override_conference_with_deadline(self):
+  html='<h4>MIRDEC International Academic Conference 24-25 November 2026, Barcelona</h4><h2>Submission deadline</h2><p>13 November 2026</p>'
+  result=await validate_website({'url':URL},Reader({URL:html}),Search(results=[]))
+  self.assertEqual(result['status'],'validated')
+  self.assertEqual({(r['start_date'],r['end_date']) for r in result['report']['event_evidence']},{('2026-11-24','2026-11-25')})
+  self.assertNotIn('start_date',result['parse_settings']['parse_passes']['event_date']['selectors'])
  async def test_root_then_observed_event_url_is_third_and_final_strategy(self):
   target=ROOT+'/2027/annual-conference'
   reader=Reader({URL:RuntimeError('HTTP 404'),ROOT:'<h1>Organizer</h1><p>Find our conferences and upcoming scientific meetings here.</p><a href="'+target+'">Annual conference 2027</a>',target:BODY})
