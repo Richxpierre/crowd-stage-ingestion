@@ -1,6 +1,7 @@
 """Deterministic event metadata. No AI, no facts taken from search snippets."""
 import re
 from urllib.parse import urlsplit
+import unicodedata
 from bs4 import BeautifulSoup
 
 # Product region grouping, not schema.org addressRegion (which is a state/province).
@@ -25,7 +26,7 @@ def region_for(value):
 
 def infer(body,url,title,known=None,node=None,single_event=False):
  known=known or {};node=node or {};fields={};proof={};warnings=[];suggestions={}
- soup=BeautifulSoup(body,'html.parser')
+ soup=BeautifulSoup(body.decode('utf-8','replace') if isinstance(body,bytes) else body,'html.parser')
  for n in soup.select('script,style,nav,header,footer,aside'):n.decompose()
  main=soup.select_one('main,article') or soup
  text=main.get_text(' ',strip=True)
@@ -55,7 +56,8 @@ def infer(body,url,title,known=None,node=None,single_event=False):
  if not code and tld in COUNTRIES and tld not in ('CO','ME','AI','IO','TV','FM','CC','WS'):
   suggestions['region']={'value':COUNTRIES[tld][1],'method':'country_domain','confidence':'low','page_url':url};warnings.append('Country domain suggests a region but does not establish the event location.')
  # Negated attendance and online registration are not attendance modes.
- attendance_text=re.sub(r'\b(?:not|no longer)\s+(?:an?\s+)?(?:online|virtual|hybrid|in.person|on.site)\s+(?:event|conference|expo|summit)\b','',scoped+' '+title,flags=re.I)
+ attendance_source=unicodedata.normalize('NFKC',' | '.join(contexts)+' '+scoped+' '+title).translate(str.maketrans({'‐':'-','‑':'-','–':'-','—':'-'}))
+ attendance_text=re.sub(r'\b(?:not|no longer)\s+(?:an?\s+)?(?:online|virtual|hybrid|in.person|on.site)\s+(?:event|conference|expo|summit)\b','',attendance_source,flags=re.I)
  attendance_text=re.sub(r'\b(?:online|virtual)\s+conference\s+(?:registration|submission)\b','',attendance_text,flags=re.I)
  mode=str(node.get('eventAttendanceMode',''))
  locations=node.get('location') or [];locations=locations if isinstance(locations,list) else [locations]

@@ -42,6 +42,9 @@ class MetadataTests(unittest.TestCase):
  def test_mirdec_hybrid_without_h1(self):
   r=infer(b'<h4>MIRDEC Conference Barcelona Spain</h4><h2>ON-SITE &amp; ONLINE CONFERENCE</h2>',S['url'],'MIRDEC Conference Barcelona Spain',single_event=True)
   self.assertEqual(r['fields']['format'],'hybrid');self.assertEqual(r['fields']['region'],'Europe')
+ def test_hybrid_heading_after_large_rendered_wrapper(self):
+  body=('<main><h4>MIRDEC Conference Barcelona Spain</h4>'+('menu '*10000)+'<h2>ON-SITE &amp; ONLINE CONFERENCE</h2></main>').encode()
+  self.assertEqual(infer(body,S['url'],'MIRDEC Conference Barcelona Spain',single_event=True)['fields']['format'],'hybrid')
  def test_virtual_location(self):
   r=infer(b'',S['url'],'Example Conference',node={'location':{'@type':'VirtualLocation'}});self.assertEqual(r['fields']['format'],'online')
 class Reader:
