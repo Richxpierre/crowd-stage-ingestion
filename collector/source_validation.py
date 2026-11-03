@@ -184,15 +184,18 @@ async def validate_website(candidate,reader,search):
 async def run(limit=5,validation_id=None,dry_run=False):
     from .client import Client
     db=Client()
-    for _ in range(max(1,min(limit,10))):
+    worker_deadline=time.monotonic()+max(180,min(int(os.environ.get('VALIDATION_BATCH_SECONDS','600')),900))
+    async with Crawl4AIReader(os.environ.get('COLLECTOR_USER_AGENT',''),deadline=worker_deadline) as reader:
+      for _ in range(max(1,min(limit,50))):
+        if time.monotonic()>=worker_deadline-15:break
         candidate=db.request('POST','rpc/claim_conference_source_validation',json={'p_id':validation_id})
         if not candidate:break
-        deadline=time.monotonic()+180
+        deadline=min(worker_deadline,time.monotonic()+180)
+        reader.deadline=deadline
         try:
             search=SearXNG(deadline=deadline)
             try:
-                async with Crawl4AIReader(os.environ.get('COLLECTOR_USER_AGENT',''),deadline=deadline) as reader:
-                    result=await validate_website(candidate,reader,search)
+                result=await asyncio.wait_for(validate_website(candidate,reader,search),timeout=max(1,deadline-time.monotonic()))
             finally:search.close()
         except Exception as exc:
             result={'status':'needs_review','canonical_url':candidate['url'],'parse_settings':{},'report':{'errors':[{'message':str(exc)[:750]}]},'reason':'Validator setup failed; retry after checking the worker'}
@@ -206,3 +209,4 @@ def main():
     parser.add_argument('--limit',type=int,default=5);parser.add_argument('--validation-id');parser.add_argument('--dry-run',action='store_true')
     args=parser.parse_args();asyncio.run(run(args.limit,args.validation_id,args.dry_run))
 if __name__=='__main__':main()
+
