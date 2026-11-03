@@ -25,6 +25,10 @@ jobs:
         env:
           CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/strategy-probe
           COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT }}
+      - run: python -m scripts.probe_metadata
+        env:
+          SEARXNG_URL: http://127.0.0.1:8888
+          COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -78,5 +82,4 @@ jobs:
         env:
           RUN_CRAWLER_TESTS: '1'
           CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/crowdstage-crawler
-
 

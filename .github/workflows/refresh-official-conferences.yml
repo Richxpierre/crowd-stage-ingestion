@@ -27,6 +27,8 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       RENDER_HTML: '1'
       SOURCE_PARSE_PASSES: '1'
+      METADATA_ENRICHMENT: '1'
+      SEARXNG_URL: http://127.0.0.1:8888
       COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT }}
     steps:
       - uses: actions/checkout@v4
@@ -34,12 +36,13 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt -r requirements-crawler.txt
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: chromium-${{ runner.os }}-${{ hashFiles('requirements.txt', 'requirements-crawler.txt') }}
       - run: python -m playwright install --with-deps chromium
+      - run: python scripts/start_search_service.py
       - name: Refresh websites
         shell: bash
         env:
@@ -54,3 +57,5 @@ jobs:
             python -m collector.sync
           fi
 
+      - if: always()
+        run: docker rm -f crowdstage-search || true
