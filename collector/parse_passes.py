@@ -21,7 +21,7 @@ FIELDS = {
     'event_date': ('start_date','end_date','timezone','status'),
     'event_stats': ('price_from','price_currency','attendees','exhibitors','format'),
     'event_location': ('venue','city','region','country'),
-    'event_details': ('summary','categories','cover_url','image_method','image_source_url','registration_url','cfp_url','cfp_deadline'),
+    'event_details': ('event_kind','summary','categories','cover_url','image_method','image_source_url','registration_url','cfp_url','cfp_deadline'),
 }
 
 def now(): return datetime.now(timezone.utc).isoformat()
@@ -106,13 +106,13 @@ def extract_pass(kind, pages, source, config, on_page=None):
     results=[]
     for url,body in pages.items():
         digest=hashlib.sha256(body).hexdigest()
-        def add(title,start,fields,method,event_url=None):
+        def add(title,start,fields,method,event_url=None,metadata=None):
             fields=nonempty(fields)
             original=event_url or url;canonical=canonical_page(original)
             if 'source_record_id' in fields and fields['source_record_id'].startswith(original+'|'):
                 fields['source_record_id']=canonical+fields['source_record_id'][len(original):]
             if fields: results.append(dict(title=title,start_date=start,event_url=canonical,
-                fields=fields,evidence={'page_url':url,'snapshot_sha256':digest,'method':method}))
+                fields=fields,evidence={'page_url':url,'snapshot_sha256':digest,'method':method,**({'metadata':metadata} if metadata else {})}))
         custom=overrides(kind,body,config,url)
         dated=[]
         if kind=='event_date':
@@ -124,8 +124,15 @@ def extract_pass(kind, pages, source, config, on_page=None):
                     'source_record_id':record['source_record_id']},'date_parser',record.get('event_url'))
         else:
             for node in event_nodes(body):
+                fields=node_fields(kind,node,body,url,source)
+                from .metadata import infer,GROUPS
+                venue,city,_,country=_extract_location(node.get('location'))
+                meta=infer(body,url,plain(node.get('name'),240) or '',dict(venue=venue,city=city,country=country),node)
+                if kind=='event_location' and fields.get('region') not in GROUPS:fields.pop('region',None)
+                for key,value in meta['fields'].items():
+                    if key in FIELDS[kind]:fields.setdefault(key,value)
                 add(plain(node.get('name'),240),date_part(node.get('startDate')),
-                    node_fields(kind,node,body,url,source),'schema_event',clean_url(node.get('url')))
+                    fields,'schema_event',clean_url(node.get('url')),meta)
             soup=BeautifulSoup(body,'html.parser')
             # HTML-only extraction stays useful even when dates are missing.
             headings=soup.find_all('h1')
@@ -149,6 +156,14 @@ def extract_pass(kind, pages, source, config, on_page=None):
                         values={number(m,True) for m in matches};values.discard(None)
                         if len(values)==1:fields[field]=values.pop()
                 add(title,None,fields,'html_event_page')
+        # Infer only on a uniquely dated event page; never borrow catalog/footer facts.
+        if kind!='event_date' and not list(event_nodes(body)):
+            from .metadata import infer
+            dated_records=parse_page(body,source,url)
+            if len(dated_records)==1:
+                rec=dated_records[0];meta=infer(body,url,rec['title'],rec,single_event=True)
+                add(rec['title'],rec['start_date'],{k:v for k,v in meta['fields'].items() if k in FIELDS[kind]},
+                    'metadata_rules',rec.get('event_url'),meta)
         # Unscoped HTML overrides are usable on a dedicated source only. Catalogs
         # must use Event structured nodes, avoiding facts leaking between editions.
         if custom and (source.get('selectors') or {}).get('single_event') and not (kind=='event_date' and dated):
@@ -273,7 +288,14 @@ def assemble(report, source):
                     report[kind]['status']='partial'
                     report[kind].setdefault('errors',[]).append({'message':'Conflicting evidence for '+field+'; field left unknown'})
             if candidates:evidence[kind]=[c['evidence'] for c in candidates]
-        record['extraction']={'method':'four_pass','passes':evidence,'conflicting_fields':conflicts}
+        metadata={'version':1,'evidence':{},'fields':{},'suggestions':{},'warnings':[]}
+        for extra in [x for kind in PASS_TYPES[1:] for x in report.get(kind,{}).get('results',[])]:
+            if extra.get('event_url')!=item['event_url'] or extra.get('start_date') not in (None,start):continue
+            meta=extra.get('evidence',{}).get('metadata',{})
+            for key,proof in meta.get('evidence',{}).items():
+                if record.get(key)==proof['value']:metadata['evidence'][key]=proof;metadata['fields'][key]=proof['value']
+            metadata['suggestions'].update(meta.get('suggestions',{}));metadata['warnings']+=meta.get('warnings',[])
+        record['extraction']={'method':'four_pass','passes':evidence,'conflicting_fields':conflicts,'metadata_enrichment':metadata}
         try:records.append(_finish(record,source['publisher'],dates['source_record_id']))
         except (ValueError,KeyError):continue
     # An edition's disagreement about dates needs review; do not import two dates

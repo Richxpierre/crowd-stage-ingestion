@@ -113,6 +113,15 @@ def sync_one(db, source, selected_passes=None, parse_only=False):
         if source['kind'] != 'auto' and not recovered:
             fetcher.deadline=min(getattr(fetcher,'deadline',None) or float('inf'),time.monotonic()+60)
             records=enrich_missing_images(fetcher,source,records)
+        if os.environ.get('METADATA_ENRICHMENT')=='1' and any(not r.get('region') or r.get('format') in (None,'unknown','') for r in records):
+            import asyncio
+            from .metadata_worker import enrich_with_browser
+            try:
+                records,metadata_report=asyncio.run(enrich_with_browser(records,source,time.monotonic()+90))
+                report['metadata_enrichment']=metadata_report
+            except Exception as exc:
+                # Optional enrichment must never discard otherwise valid dates.
+                report['metadata_enrichment']={'errors':[{'message':str(exc)[:500]}]}
         # Same feed UID/record ID is a single source observation.
         records = list({r['source_record_id']:r for r in records}.values())
         if recovered or (source.get('discovery_report') or {}).get('mode')=='website_fallback':
@@ -185,5 +194,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-
 
