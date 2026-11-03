@@ -4,6 +4,7 @@ import asyncio
 from datetime import date,datetime,timezone
 import re
 import time
+import threading
 from urllib.parse import urlsplit
 from .parsers import clean_url
 from .crawler_reader import same_owner
@@ -83,8 +84,10 @@ class BoundedReader:
         return page
 
 class BoundedSearch:
-    def __init__(self,search):self.searcher=search;self.cache={};self.requests=0;self.results=[];self.audit=[]
+    def __init__(self,search):self.searcher=search;self.cache={};self.requests=0;self.results=[];self.lock=threading.Lock()
     def search(self,query):
+        with self.lock:return self._search(query)
+    def _search(self,query):
         if query in self.cache:return self.cache[query]
         if self.requests>=MAX_SEARCHES:raise RuntimeError('Validation search budget exhausted')
         self.requests+=1

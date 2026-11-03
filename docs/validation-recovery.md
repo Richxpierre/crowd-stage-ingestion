@@ -36,3 +36,5 @@ The fufifest.org hostname still failed DNS in research; search evidence of a dif
 
 Every report stores strategy names, URLs, outcomes, timing, final failure code, warnings, and shared budget usage. Existing JSON report storage and execution-attempt history preserve this evidence. External discoveries requiring organizer approval still require approval. New event publication still requires review.
 
+Generated CSS mappings must reproduce independently extracted facts before they are saved. This prevents an otherwise unique submission-deadline node from overriding an explicitly dated conference heading. The live browser probe checks exact researched event dates, and accepts an access-unresolved result only for a specific network/policy category; missing event evidence on a readable known event remains a test failure.
+

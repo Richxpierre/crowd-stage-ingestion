@@ -2,11 +2,21 @@ import json
 import unittest
 from collector.automatic import parse_page
 from collector.source_validation import validate_website
-from collector.validation_recovery import scope_url
+from collector.validation_recovery import scope_url,BoundedSearch
 from test_source_validation import Reader,Search,BODY,URL,ROOT
 
 SOURCE={'url':URL,'name':'Conference','publisher':'Organizer','kind':'auto','is_official_source':True,'selectors':{'website_only':True}}
 class EvidenceTests(unittest.TestCase):
+ def test_concurrent_cached_searches_do_not_multiply_network_requests(self):
+  from concurrent.futures import ThreadPoolExecutor
+  import time
+  class SlowSearch:
+   calls=0
+   def search(self,query):
+    self.calls+=1;time.sleep(0.01);return {'results':[]}
+  search=SlowSearch();bounded=BoundedSearch(search)
+  with ThreadPoolExecutor(max_workers=8) as pool:list(pool.map(bounded.search,['same query']*8))
+  self.assertEqual(search.calls,1);self.assertEqual(bounded.requests,1)
  def dates(self,html):return {(r['start_date'],r['end_date']) for r in parse_page(html.encode(),SOURCE,URL)}
  def test_article_with_submission_deadline_uses_explicit_conference_sentence(self):
   html='<main><h1>IOS-Jahrestagung 2027: Recentering the Margins of the World Economy</h1><p>The submission deadline is December 15, 2026. The conference will take place from May 20 to 21, 2027 in Regensburg, Germany.</p></main>'
