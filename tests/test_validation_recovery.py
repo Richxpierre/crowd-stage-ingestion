@@ -2,11 +2,18 @@ import json
 import unittest
 from collector.automatic import parse_page
 from collector.source_validation import validate_website
-from collector.validation_recovery import scope_url,BoundedSearch
+from collector.validation_recovery import scope_url,BoundedSearch,failure_code
 from test_source_validation import Reader,Search,BODY,URL,ROOT
 
 SOURCE={'url':URL,'name':'Conference','publisher':'Organizer','kind':'auto','is_official_source':True,'selectors':{'website_only':True}}
 class EvidenceTests(unittest.TestCase):
+ def test_transport_failures_have_distinct_review_categories(self):
+  cases={'HTTP 401':'authentication_required','HTTP 403':'access_blocked','HTTP 408':'timeout','HTTP 410':'missing_page',
+         'HTTP 429':'rate_limited','HTTP 502':'server_error','HTTP 504':'timeout','certificate verify failed':'tls_error',
+         'Temporary failure in name resolution':'dns_failure','Response exceeds 4 MB':'response_too_large',
+         'Robots policy denies access':'policy_denied','Cannot verify robots.txt':'policy_unavailable'}
+  for message,expected in cases.items():
+   self.assertEqual(failure_code({'reason':message,'report':{}}),expected)
  def test_concurrent_cached_searches_do_not_multiply_network_requests(self):
   from concurrent.futures import ThreadPoolExecutor
   import time

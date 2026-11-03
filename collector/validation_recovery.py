@@ -49,14 +49,19 @@ def failure_code(result):
     if '429' in text or 'rate limit' in text:return 'rate_limited'
     if 'robots policy denies access' in text:return 'policy_denied'
     if 'robots.txt blocks' in text:return 'robots_path_denied'
+    if re.search(r'\bhttp\s*401\b',text):return 'authentication_required'
     if 'for sale' in text or 'parked' in text:return 'parked_or_empty'
     if '403' in text or 'cloudflare' in text or 'blocked' in text or 'access denied' in text:return 'access_blocked'
     if 'robots' in text:return 'policy_unavailable'
     if 'empty rendered' in text:return 'empty_page'
     if '404' in text or '410' in text or 'not-found' in text:return 'missing_page'
     if 'name resolution' in text or 'getaddrinfo' in text or 'dns' in text:return 'dns_failure'
+    if re.search(r'certificate|sslerror|tls handshake',text):return 'tls_error'
+    if re.search(r'exceeds|too large|unexpectedly large',text):return 'response_too_large'
+    if 'navigation budget exhausted' in text:return 'budget_exhausted'
+    if re.search(r'\bhttp\s*(?:408|504)\b',text):return 'timeout'
     if 'timeout' in text or 'timed out' in text or 'time budget' in text:return 'timeout'
-    if re.search(r'\b50[0234]\b',text):return 'server_error'
+    if re.search(r'\b5\d{2}\b',text):return 'server_error'
     if 'conflict' in text:return 'conflicting_evidence'
     if result.get('report',{}).get('past_events'):return 'past_edition'
     return 'missing_event_evidence'
@@ -163,7 +168,7 @@ async def validate_with_recovery(candidate,reader,search,evaluate):
         # www changes are scoped to the same organizer; no .com/.org/.net guessing.
         p=urlsplit(original);host=p.hostname or ''
         alias='https://'+(host[4:] if host.startswith('www.') else 'www.'+host)
-        if code in ('dns_failure','missing_page','policy_unavailable') and scope_url(alias,original) and alias.rstrip('/') not in bounded.counts:
+        if code in ('dns_failure','missing_page','policy_unavailable','tls_error') and scope_url(alias,original) and alias.rstrip('/') not in bounded.counts:
             selected=alias;name='verified_host_alias';continue
         if code in ('dns_failure','timeout','server_error','empty_page') and bounded.counts.get(original.rstrip('/'),0)<2:
             selected=original;name='bounded_transport_retry';bounded.force=True
