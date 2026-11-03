@@ -81,7 +81,7 @@ class BoundedReader:
         entry={'url':url,'status':'running'};self.audit.append(entry)
         try:
             page=await self.reader.read(url)
-            entry['status']='loaded'
+            entry.update(status='loaded',final_url=page['url'])
         except BaseException as exc:
             entry.update(status='failed',message=str(exc)[:500] or 'Strategy time budget exhausted',http_status=http_status(exc));raise
         if not scope_url(page['url'],self.original):raise UnsafeDestination('Redirect changed organizer ownership')

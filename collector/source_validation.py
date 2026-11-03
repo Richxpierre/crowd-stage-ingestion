@@ -175,8 +175,8 @@ async def _validate_site(candidate,reader,search):
             plan[kind]=config
             results[kind]={'status':'success' if extracted else 'missing','results':extracted,'errors':[]}
         assembled=assemble(results,source)
-        current=[r for r in assembled if r['end_date']>=today and int(r['start_date'][:4])<=date.today().year+2]
-        audit.update(event_evidence=[{'title':r['title'],'start_date':r['start_date'],'end_date':r['end_date'],'url':r['event_url']} for r in current][:20],
+        current=[r for r in assembled if r['end_date']>=today and int(r['start_date'][:4])<=date.today().year+2 and r.get('status')!='cancelled']
+        audit.update(event_evidence=[{'title':r['title'],'start_date':r['start_date'],'end_date':r['end_date'],'url':r['event_url'],'page_url':r['source_url']} for r in current][:20],
                      pass_results=results,search_matches=search_matches)
         audit['past_events']=[{'title':r['title'],'start_date':r['start_date'],'end_date':r['end_date']} for r in raw if r['end_date']<today][:5]
         outcome['parse_settings']={'website_only':True,'render':True,'max_pages':8,'single_event':single,'parse_passes':plan}
@@ -188,7 +188,9 @@ async def _validate_site(candidate,reader,search):
         elif any(critical.intersection(r.get('extraction',{}).get('conflicting_fields',[])) for r in current):outcome['reason']='Conflicting event location facts require review'
         elif (candidate.get('evidence') or {}).get('requires_review') and not (candidate.get('evidence') or {}).get('admin_reviewed'):
             outcome['reason']='External search discovery requires organizer review before admission'
-        else:outcome.update(status='validated',reason='Direct organizer-page evidence confirms an upcoming conference; four-pass settings verified')
+        else:
+            audit['evidence_basis']='direct_organizer_event'
+            outcome.update(status='validated',reason='Direct organizer-page evidence confirms an upcoming conference; four-pass settings verified')
         return outcome
     except Exception as exc:
         outcome['reason']='Website could not be validated: '+str(exc)[:500]
