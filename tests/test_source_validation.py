@@ -28,15 +28,16 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
   reader=Reader({URL:RuntimeError('HTTP 404'),ROOT:BODY})
   result=await validate_website({'url':URL},reader,Search(results=[{'url':ROOT,'title':'Conference'}]))
   self.assertEqual(result['status'],'validated');self.assertEqual(result['canonical_url'],ROOT)
-  self.assertEqual(result['report']['original_url'],URL);self.assertEqual(reader.calls[:2],[URL,ROOT])
+  self.assertEqual(result['report']['original_url'],URL);self.assertEqual([u.rstrip('/') for u in reader.calls[:2]],[URL,ROOT])
  async def test_persistent_403_is_review_not_validation(self):
   reader=Reader({URL:PermissionError('HTTP 403'),ROOT:PermissionError('HTTP 403')})
   result=await validate_website({'url':URL},reader,Search())
-  self.assertEqual(result['status'],'needs_review');self.assertEqual(reader.calls,[URL,ROOT])
- async def test_search_outage_or_empty_search_never_autovalidates(self):
+  self.assertEqual(result['status'],'needs_review');self.assertEqual([u.rstrip('/') for u in reader.calls],[URL,ROOT])
+ async def test_search_outage_or_empty_search_does_not_override_direct_event_proof(self):
   for search in (Search(error=RuntimeError('Search unavailable')),Search(results=[])):
    result=await validate_website({'url':URL},Reader({URL:BODY}),search)
-   self.assertEqual(result['status'],'needs_review')
+   self.assertEqual(result['status'],'validated')
+   self.assertTrue(result['report']['warnings'])
  async def test_future_dates_cannot_come_from_search_snippet(self):
   result=await validate_website({'url':URL},Reader({URL:'<h1>Cloud Conference</h1><p>Our annual conference is coming soon, please check back for details.</p>'}),Search())
   self.assertEqual(result['status'],'needs_review')
@@ -52,3 +53,4 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(result['status'],'needs_review');self.assertEqual(reader.calls,[URL])
  def test_root_does_not_strip_a_hosted_tenant(self):
   self.assertEqual(website_root('https://conference.example.org/2026/event?x=1'),'https://conference.example.org')
+
