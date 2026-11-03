@@ -24,7 +24,7 @@ def website_root(url):
 def http_status(exc):
     code=getattr(getattr(exc,'response',None),'status_code',None)
     if code:return code
-    match=re.search(r'\bHTTP\s*(403|404)\b',str(exc),re.I)
+    match=re.search(r'\bHTTP\s*(\d{3})\b',str(exc),re.I)
     return int(match[1]) if match else None
 
 def bad_page(page):
@@ -40,9 +40,13 @@ def observed_links(page,root):
         url=clean_url(urljoin(page['url'],a['href']))
         if not url or not same_owner(url,root):continue
         label=a.get_text(' ',strip=True)+' '+urlsplit(url).path
-        if re.search(r'login|privacy|terms|\.pdf$|\.xml$|\.ics$',label,re.I):continue
+        if re.search(r'login|privacy|terms|contact|about.lis|contributors|institutional.policies|\.pdf$|\.xml$|\.ics$',label,re.I):continue
         score=sum(bool(re.search(pattern,label,re.I)) for pattern in [r'event|conference|edition|20\d\d',r'about|venue|location|visit|attend',r'ticket|registration|price'])
-        if score:output.append((score,url,label[:180]))
+        if score:
+            # Prefer links tied to this edition over site-wide menu entries.
+            tokens=set(re.findall(r'[a-z]{4,}|20\d\d',urlsplit(page['url']).path.lower()))-{'conference','conferences','event','events','home','registration'}
+            score+=3*len(tokens & set(re.findall(r'[a-z]{4,}|20\d\d',urlsplit(url).path.lower())))
+            output.append((score,url,label[:180]))
     return sorted(output,key=lambda x:(-x[0],x[1]))
 
 def safe_selector(soup,node):
@@ -83,7 +87,7 @@ def proposed_selectors(kind,body):
             if exact:mapping={'start_date':exact,'end_date':exact}
     return mapping
 
-async def validate_website(candidate,reader,search):
+async def _validate_site(candidate,reader,search):
     original=clean_url(candidate['url'])
     if not original:raise ValueError('Use a public HTTPS organizer URL')
     audit={'original_url':original,'attempts':[],'searches':[],'pages':[],'errors':[]}
@@ -93,7 +97,9 @@ async def validate_website(candidate,reader,search):
             page=await reader.read(url)
             if bad_page(page):
                 if re.search(r'404|page not found',page.get('html','')[:2000],re.I):raise RuntimeError('HTTP 404: page-not-found content')
-                raise ValueError('Page is empty, blocked or parked')
+                if re.search(r'domain (?:is )?for sale|website (?:is )?parked',page.get('html','')[:2000],re.I):raise ValueError('Domain is parked or for sale')
+                if re.search(r'access denied|just a moment|verify you are human',page.get('html','')[:2000],re.I):raise PermissionError('HTTP 403: access challenge')
+                raise ValueError('Empty rendered page')
             audit['attempts'].append({'url':url,'status':'loaded'})
             return page
         except Exception as exc:
@@ -103,15 +109,8 @@ async def validate_website(candidate,reader,search):
         from .discovery import excluded
         if excluded(original):
             outcome['reason']='This URL belongs to an aggregator or excluded platform, not an organizer website';return outcome
+        first=await read(original)
         root_retry=False
-        try:first=await read(original)
-        except Exception as exc:
-            root=website_root(original)
-            if isinstance(exc,UnsafeDestination) or http_status(exc) not in (403,404) or original.rstrip('/')==root:raise
-            # A single bounded retry, preserving the host/tenant and all network guards.
-            outcome['canonical_url']=root
-            root_retry=True
-            first=await read(root)
         canonical=outcome['canonical_url']
         if not same_owner(first['url'],canonical):raise ValueError('Organizer ownership changed during navigation')
         # Store the working redirected hostname, keeping root retries path-free.
@@ -131,8 +130,12 @@ async def validate_website(candidate,reader,search):
                 urls.extend(r['url'] for r in same_site_results)
             except Exception as exc:
                 search_failed=True;audit['errors'].append({'stage':'search','message':str(exc)[:500]})
+        initial_source={'url':canonical,'name':candidate.get('title') or seed_host,'publisher':seed_host,'kind':'auto','is_official_source':True,'selectors':{'website_only':True}}
+        initial_records=parse_page(first['html'].encode(),initial_source,first['url'])
+        initial_future=[r for r in initial_records if r['end_date']>=date.today().isoformat() and r.get('status')!='cancelled']
         urls=[u for _,u,_ in observed_links(first,canonical)]+urls
-        for url in list(dict.fromkeys(urls))[:5]:
+        # An event's own complete page wins over unrelated catalog/navigation pages.
+        for url in ([] if initial_future else list(dict.fromkeys(urls))[:2]):
             if url in pages:continue
             try:
                 page=await read(url)
@@ -167,19 +170,29 @@ async def validate_website(candidate,reader,search):
         current=[r for r in assembled if r['end_date']>=today and int(r['start_date'][:4])<=date.today().year+2]
         audit.update(event_evidence=[{'title':r['title'],'start_date':r['start_date'],'end_date':r['end_date'],'url':r['event_url']} for r in current][:20],
                      pass_results=results,search_matches=search_matches)
+        audit['past_events']=[{'title':r['title'],'start_date':r['start_date'],'end_date':r['end_date']} for r in raw if r['end_date']<today][:5]
         outcome['parse_settings']={'website_only':True,'render':True,'max_pages':8,'single_event':single,'parse_passes':plan}
-        if search_failed:outcome['reason']='Search assistance failed; review the crawl evidence and retry'
-        elif not search_matches:outcome['reason']='Search returned no same-website evidence; manual review required'
-        elif not future or not current:outcome['reason']='No unambiguous upcoming conference edition found on the crawled website'
-        elif any(r.get('extraction',{}).get('conflicting_fields') for r in current):outcome['reason']='Conflicting event facts require review'
+        critical={'city','country','region','venue'}
+        optional=sorted({field for r in current for field in r.get('extraction',{}).get('conflicting_fields',[]) if field not in critical})
+        audit['warnings']=([{'code':'optional_conflicts','fields':optional,'message':'Conflicting optional values stay unknown; they do not invalidate the website.'}] if optional else [])
+        if search_failed or not search_matches:audit['warnings'].append({'code':'search_unavailable' if search_failed else 'not_indexed','message':'Search could not corroborate this URL; admission requires directly crawled event evidence.'})
+        if not future or not current:outcome['reason']='No unambiguous upcoming conference edition found on the crawled website'
+        elif any(critical.intersection(r.get('extraction',{}).get('conflicting_fields',[])) for r in current):outcome['reason']='Conflicting event location facts require review'
         elif (candidate.get('evidence') or {}).get('requires_review') and not (candidate.get('evidence') or {}).get('admin_reviewed'):
             outcome['reason']='External search discovery requires organizer review before admission'
-        else:outcome.update(status='validated',reason='Crawled website and same-site search evidence confirm an upcoming conference; four-pass settings verified')
+        else:outcome.update(status='validated',reason='Direct organizer-page evidence confirms an upcoming conference; four-pass settings verified')
         return outcome
     except Exception as exc:
         outcome['reason']='Website could not be validated: '+str(exc)[:500]
         audit['errors'].append({'stage':'validation','http_status':http_status(exc),'message':str(exc)[:500]})
+        audit['terminal']=isinstance(exc,UnsafeDestination)
+        if getattr(exc,'recovery_url',None):audit['recovery_url']=exc.recovery_url
         return outcome
+
+
+async def validate_website(candidate,reader,search):
+    from .validation_recovery import validate_with_recovery
+    return await validate_with_recovery(candidate,reader,search,_validate_site)
 
 async def run(limit=5,validation_id=None,dry_run=False):
     from .client import Client

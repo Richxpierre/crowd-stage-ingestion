@@ -32,7 +32,7 @@ DATE_PATTERNS = [
     re.compile(fr'(?P<d>{D})\s+(?P<m>{M})\s*,?\s*(?P<y>20\d{{2}})', re.I),
 ]
 SKIP_PATH = re.compile(r'/(?:schedule|sessions?|speakers?|news|blog|press|privacy|legal|terms|exit|login|signup|sponsors?|exhibitors?)(?:/|$)', re.I)
-EVENT_WORD = re.compile(r'conference|congress|symposium|convention|\bexpo\b|summit|trade.?show|festival|con\b|\bevent', re.I)
+EVENT_WORD = re.compile(r'conference|congress|symposium|convention|\bexpo\b|summit|trade.?show|festival|con\b|\bevent|jahrestagung', re.I)
 
 
 def date_range(text):
@@ -242,6 +242,39 @@ def parse_event_hero(body,source,url):
     return []
 
 
+def parse_event_prose(body,source,url):
+    """Explicit event-date sentences in article content; never infer a year or a venue."""
+    soup=BeautifulSoup(body,'html.parser')
+    for node in soup.select('nav,header,footer,aside,script,style'):node.decompose()
+    scope=soup.find('main') or soup.find('article') or soup
+    headings=[h for h in scope.find_all(['h1','h2','h3','h4']) if EVENT_WORD.search(h.get_text(' ',strip=True))
+              and not re.search(r'^(?:upcoming|past|our|all)?\s*(?:events|conferences|news|calendar)\s*$',h.get_text(' ',strip=True),re.I)]
+    primary=[h for h in headings if h.name=='h1']
+    if len(primary)>1:return []
+    heading=primary[0] if primary else headings[0] if headings else None
+    if not heading:return []
+    title=plain(heading.get_text(' ',strip=True),240)
+    spans=[];evidence=[]
+    for node in scope.find_all(['p','time','h2','h3','h4']):
+        text=node.get('datetime') or node.get_text(' ',strip=True)
+        if len(text)>1600:continue
+        for sentence in re.split(r'(?<=[.!?])\s+',text):
+            if re.search(r'deadline|submission|registration|published|copyright|updated|notification|acceptance',sentence,re.I):continue
+            # Explicitly tie prose dates to the event, not arbitrary dates elsewhere on a page.
+            contextual=EVENT_WORD.search(sentence) and re.search(r'held|take place|takes place|happen|conference\s+on\b|from\b|conference.*\bon\b',sentence,re.I)
+            nearby=not SKIP_PATH.search(urlsplit(url).path) and node in heading.find_next_siblings(limit=4) and len(sentence)<250
+            if not(contextual or nearby):continue
+            dates=date_range(sentence)
+            if dates:spans.append(dates);evidence.append(sentence)
+    if not spans or len(set(spans))!=1:return []
+    start,end=spans[0]
+    record=dict(title=title,start_date=start,end_date=end,timezone=None,venue=None,city=None,country=None,region=None,
+        format='unknown',categories=[],summary=None,event_url=url,official_url=url,registration_url=None,cfp_url=None,
+        cfp_deadline=None,status='upcoming',source_url=url)
+    record.update(choose_image(soup,url,selectors=source.get('selectors')))
+    return [_evidence(_finish(record,source['publisher'],url+'|'+start[:4]),source,'explicit_event_prose',' | '.join(evidence)[:1200])]
+
+
 def parse_page(body, source, url):
     from .feeds import feed_body,parse_feed
     if (source.get('selectors') or {}).get('website_only') and (feed_body(body) or body.lstrip().startswith(b'BEGIN:VCALENDAR')):
@@ -260,6 +293,8 @@ def parse_page(body, source, url):
             records,method=parse_dated_heading(body,source,url),'dated_event_heading'
         if not records:
             records,method=parse_event_hero(body,source,url),'dated_event_hero'
+        if not records:
+            records,method=parse_event_prose(body,source,url),'explicit_event_prose'
     return [_evidence(r,source,method,r.get('extraction',{}).get('evidence') or
                       f"{r['title']} | {r['start_date']} – {r['end_date']} | {r.get('venue') or ''}") for r in records]
 
@@ -372,3 +407,4 @@ def collect_automatic(fetcher, source):
             _finish(unique[key],source['publisher'],unique[key]['source_record_id'])
     report['events_found']=len(unique)
     return list(unique.values()),report
+

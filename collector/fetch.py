@@ -19,6 +19,11 @@ class UnsafeDestination(ValueError):
 class RobotsPathDenied(PermissionError):
     """This path is disallowed; another path still needs its own robots check."""
 
+class RobotsPolicyRedirect(PermissionError):
+    def __init__(self,hostname,target):
+        super().__init__(f'Robots policy redirected to an HTML page for {hostname}')
+        self.recovery_url=target
+
 
 def host_of(url: str) -> str:
     p = urlsplit(url)
@@ -50,6 +55,7 @@ class Fetcher:
         self.min_delay = max(float(min_delay_seconds), 1.0)
         self.timeout = timeout
         self.robots: dict[str, RobotFileParser] = {}
+        self.robots_failures = {}
         self.last_fetch = LAST_FETCH
         self.deadline = None
         self.respect_robots = respect_robots
@@ -61,26 +67,39 @@ class Fetcher:
         return min(self.timeout, remaining)
 
     def _get_robots(self, hostname: str) -> RobotFileParser:
+        failed=self.robots_failures.get(hostname)
+        if failed and time.monotonic()-failed[0]<60:raise failed[1]
+        try:return self._load_robots(hostname)
+        except UnsafeDestination:raise
+        except (PermissionError,RuntimeError,ValueError) as exc:
+            self.robots_failures[hostname]=(time.monotonic(),exc)
+            raise
+
+    def _load_robots(self, hostname: str) -> RobotFileParser:
         if hostname in self.robots:
             return self.robots[hostname]
         url = f"https://{hostname}/robots.txt"
         host_of(url)
-        for attempt in range(5):
+        for attempt in range(6):
             host_of(url)
             response = self.session.get(url, timeout=self._timeout(), allow_redirects=False, stream=True)
             if response.status_code not in (301,302,303,307,308):
                 break
             target = urljoin(url,response.headers.get('Location',''))
             response.close()
-            from .automatic import same_site
-            if attempt==4 or not same_site(target,f'https://{hostname}/') or urlsplit(target).path!='/robots.txt':
-                raise PermissionError(f'Cannot safely verify redirected robots.txt for {hostname}')
+            if attempt==5:raise PermissionError(f'Cannot verify robots.txt after five redirects for {hostname}')
+            # RFC 9309 allows policy redirects across authorities. Each destination
+            # still passes HTTPS/public-DNS checks and the response size limit.
+            host_of(target)
             url=target
         if response.status_code in (401, 403):
             raise PermissionError(f"Robots policy denies access at {hostname}")
         if response.status_code == 404:
             lines = []
         elif response.status_code == 200:
+            if 'html' in response.headers.get('Content-Type','').lower():
+                response.close()
+                raise RobotsPolicyRedirect(hostname,url)
             data = bytearray()
             for chunk in response.iter_content(8192):
                 self._timeout()
@@ -88,6 +107,9 @@ class Fetcher:
                 if len(data) > 128 * 1024:
                     response.close()
                     raise ValueError("Robots response unexpectedly large")
+            if 'html' in response.headers.get('Content-Type','').lower() or data.lstrip().startswith(b'<'):
+                response.close()
+                raise RobotsPolicyRedirect(hostname,url)
             lines = data.decode('utf-8','replace').splitlines()
         else:
             raise RuntimeError(f"Cannot verify robots.txt for {hostname}: {response.status_code}")
@@ -158,4 +180,5 @@ class Fetcher:
             self.last_fetch[rate_host] = time.monotonic()
             if "response" in locals():
                 response.close()
+
 

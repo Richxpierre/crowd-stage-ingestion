@@ -38,6 +38,7 @@ class Crawl4AIReader:
         self.direct_bytes=0
         self.response_tasks=[]
         self.active_direct_page=None
+        self.validation_wait_seconds=0
 
     async def __aenter__(self):
         os.environ.setdefault('CRAWL4_AI_BASE_DIRECTORY',os.path.join(tempfile.gettempdir(),'crowdstage-crawler'))
@@ -144,6 +145,8 @@ class Crawl4AIReader:
         if urlsplit(self.current_url).path.endswith('.xml'):
             return {'url':self.current_url,'html':body.decode('utf-8-sig','replace'),'links':[],'markdown':''}
         config=self.config.clone(delay_before_return_html=8) if self.browser_direct else self.config
+        if not self.browser_direct and self.validation_wait_seconds:
+            config=self.config.clone(delay_before_return_html=min(3,self.validation_wait_seconds))
         result=await asyncio.wait_for(self.crawler.arun(url=self.current_url,config=config),timeout=55)
         if self.response_tasks:
             _,pending=await asyncio.wait(self.response_tasks,timeout=1)
@@ -158,3 +161,4 @@ class Crawl4AIReader:
             links.extend(result.links.get(group,[]))
         markdown=getattr(result.markdown,'raw_markdown',str(result.markdown or ''))
         return {'url':result.redirected_url or self.current_url,'html':result.html,'links':links,'markdown':markdown}
+
