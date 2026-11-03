@@ -17,6 +17,8 @@ for region,entries in GROUPS.items():
  for item in entries.split('|'):
   code,name=item.split(':');COUNTRIES[code]=(name,region);ALIASES[name.casefold()]=code
 ALIASES.update({'usa':'US','u.s.a.':'US','united states of america':'US','uk':'GB','u.k.':'GB','england':'GB','scotland':'GB','wales':'GB','northern ireland':'GB','czech republic':'CZ','türkiye':'TR','turkiye':'TR','republic of korea':'KR','viet nam':'VN','uae':'AE','holland':'NL','hong kong sar':'HK'})
+for pair in 'USA:US CAN:CA MEX:MX BRA:BR ARG:AR CHL:CL COL:CO PER:PE GBR:GB IRL:IE FRA:FR DEU:DE ESP:ES PRT:PT ITA:IT NLD:NL BEL:BE CHE:CH AUT:AT DNK:DK NOR:NO SWE:SE FIN:FI POL:PL CZE:CZ HUN:HU GRC:GR ROU:RO CHN:CN HKG:HK TWN:TW JPN:JP KOR:KR IND:IN PAK:PK BGD:BD SGP:SG MYS:MY IDN:ID THA:TH VNM:VN PHL:PH AUS:AU NZL:NZ ARE:AE SAU:SA QAT:QA TUR:TR ZAF:ZA EGY:EG KEN:KE NGA:NG'.split():
+ alias,code=pair.split(':');ALIASES[alias.casefold()]=code
 # Only unambiguous city/territory names; other cities need country evidence.
 CITIES={'Beijing':'CN','Shanghai':'CN','Singapore':'SG','Hong Kong':'HK','Barcelona':'ES','Lisbon':'PT','Budapest':'HU','Helsinki':'FI','Pessac':'FR','Beykoz':'TR','Istanbul':'TR','Tokyo':'JP','Seoul':'KR','Kuala Lumpur':'MY','Bangkok':'TH','Dubai':'AE','Abu Dhabi':'AE','Nairobi':'KE','Cape Town':'ZA'}
 def country_code(value):

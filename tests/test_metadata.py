@@ -8,7 +8,7 @@ S={'name':'Example Conference','url':'https://example.org/event','publisher':'te
 def html(text='',title='Example Conference'):return f'<main><h1>{title}</h1><p>{text}</p></main>'.encode()
 class MetadataTests(unittest.TestCase):
  def test_region_country_codes_and_aliases(self):
-  for country,region in [('US','North America'),('Mexico','LATAM'),('DE','Europe'),('Türkiye','MEA'),('Singapore','APAC')]:self.assertEqual(region_for(country),region)
+  for country,region in [('US','North America'),('Mexico','LATAM'),('DE','Europe'),('FRA','Europe'),('Türkiye','MEA'),('Singapore','APAC')]:self.assertEqual(region_for(country),region)
  def test_structured_address_provides_macro_region_and_format(self):
   n={'@type':'Event','name':'Example Conference','startDate':'2027-06-01','url':S['url'],'location':{'@type':'Place','name':'Hall','address':{'addressCountry':'US','addressRegion':'California','addressLocality':'San Francisco'}}}
   body=('<script type="application/ld+json">'+json.dumps(n)+'</script>').encode()
