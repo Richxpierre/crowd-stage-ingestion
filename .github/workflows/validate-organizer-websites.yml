@@ -26,7 +26,6 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT }}
       SEARXNG_URL: http://127.0.0.1:8888
-      CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/crowdstage-validator
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -52,17 +51,23 @@ jobs:
       - if: steps.pending.outputs.has_work == 'true'
         run: pip install -r requirements-crawler.txt
       - if: steps.pending.outputs.has_work == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: chromium-${{ runner.os }}-${{ hashFiles('requirements.txt', 'requirements-crawler.txt') }}
+      - if: steps.pending.outputs.has_work == 'true'
         run: python -m playwright install --with-deps chromium
       - if: steps.pending.outputs.has_work == 'true'
         run: python scripts/start_search_service.py
       - name: Validate queued websites
         if: steps.pending.outputs.has_work == 'true'
         env:
+          CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/crowdstage-validator
           VALIDATION_ID: ${{ inputs.validation_id }}
           VALIDATION_DRY_RUN: ${{ inputs.dry_run }}
         shell: bash
         run: |
-          args=(--limit 5)
+          args=(--limit 50)
           if [ -n "$VALIDATION_ID" ]; then args+=(--validation-id "$VALIDATION_ID"); fi
           if [ "$VALIDATION_DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           python -m collector.source_validation "${args[@]}"

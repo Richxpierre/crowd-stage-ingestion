@@ -155,7 +155,9 @@ def main():
     # Manual pass requests share the same guarded worker and approval rules.
     # A focused request never enables a paused/unapproved source.
     handled=set()
-    for _ in range(0 if args.slug else 3):
+    run_deadline=time.monotonic()+max(150,min(int(os.environ.get('MAX_RUN_SECONDS','600')),1800))
+    for _ in range(0 if args.slug else min(50,max(1,int(os.environ.get('MAX_PARSE_REQUESTS','20'))))):
+        if time.monotonic()>=run_deadline-30:break
         request=db.claim_parse_request()
         if not request:break
         handled.add(request['source_id'])
@@ -169,7 +171,6 @@ def main():
     sources = [s for s in db.sources(slug=args.slug) if s['id'] not in handled][:max(0,args.limit_sources)]
     LOG.info('%d direct sources selected',len(sources))
     failures = 0
-    run_deadline=time.monotonic()+max(150,min(int(os.environ.get('MAX_RUN_SECONDS','600')),1800))
     for index,s in enumerate(sources):
         if time.monotonic()>=run_deadline:
             LOG.warning('Run time budget reached; %d due sources deferred to the next scheduled run',len(sources)-index)
@@ -184,4 +185,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
