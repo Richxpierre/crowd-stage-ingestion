@@ -262,7 +262,11 @@ def parse_event_prose(body,source,url):
             if re.search(r'deadline|submission|registration|published|copyright|updated|notification|acceptance',sentence,re.I):continue
             # Explicitly tie prose dates to the event, not arbitrary dates elsewhere on a page.
             contextual=EVENT_WORD.search(sentence) and re.search(r'held|take place|takes place|happen|conference\s+on\b|from\b|conference.*\bon\b',sentence,re.I)
-            nearby=not SKIP_PATH.search(urlsplit(url).path) and node in heading.find_next_siblings(limit=4) and len(sentence)<250
+            previous=node.find_previous_sibling()
+            label=node.find_previous(['h2','h3','h4','label','strong'])
+            role=' '.join(n.get_text(' ',strip=True) for n in (previous,label) if n is not None)
+            role_is_deadline=re.search(r'deadline|submission|registration|published|updated|notification|acceptance',role,re.I)
+            nearby=not role_is_deadline and not SKIP_PATH.search(urlsplit(url).path) and node in heading.find_next_siblings(limit=4) and len(sentence)<250
             if not(contextual or nearby):continue
             dates=date_range(sentence)
             if dates:spans.append(dates);evidence.append(sentence)

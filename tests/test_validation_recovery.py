@@ -36,6 +36,8 @@ class EvidenceTests(unittest.TestCase):
   self.assertEqual(self.dates(html),{('2026-12-10','2026-12-11')})
  def test_deadlines_alone_are_not_event_dates(self):
   self.assertEqual(self.dates('<main><h1>Cloud Conference 2027</h1><p>Submission deadline May 20, 2027.</p><p>Registration closes May 21, 2027.</p></main>'),set())
+ def test_deadline_label_separated_from_date_is_not_an_event_date(self):
+  self.assertEqual(self.dates('<main><h1>Cloud Conference 2027</h1><h2>Submission deadline</h2><p>May 20, 2027</p></main>'),set())
  def test_catalog_does_not_join_two_cards(self):
   self.assertEqual(self.dates('<main><h1>Conferences</h1><article><h2>Cloud Conference</h2><p>The conference will be held May 20, 2027.</p></article><article><h2>Security Conference</h2><p>The conference will be held June 10, 2027.</p></article></main>'),set())
  def test_shared_hosted_tenants_are_never_collapsed_to_parent(self):
