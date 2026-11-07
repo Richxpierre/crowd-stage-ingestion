@@ -2,13 +2,19 @@ name: Backend checks
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      run_ai_probe:
+        description: 'Make one paid read-only OpenAI enrichment probe (no database writes)'
+        default: false
+        type: boolean
 permissions:
   contents: read
 jobs:
   ai-mini-enrichment-probe:
-    # One bounded live API smoke check on the implementation branch only. No
-    # database credentials, scheduled execution or fork/PR secret exposure.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/ai-mini-enrichment'
+    # Paid checks are manual, separate from ordinary CI. No database credentials,
+    # scheduled execution or fork/PR secret exposure.
+    if: github.event_name == 'workflow_dispatch' && inputs.run_ai_probe
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

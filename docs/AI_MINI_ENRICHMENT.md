@@ -30,3 +30,9 @@ Review `config.ai_enrichment` for discovery, `report.ai_enrichment` for Candidat
 
 Run the tests before enabling. Measure validation yield, tokens per rescued event, false approvals and review reasons on a small sample before increasing daily usage. This implementation adds no daily account-wide budget or admin budget editor; those need a shared ledger rather than per-worker counters.
 
+## Live smoke probe
+
+The Backend checks workflow has an optional manual `run_ai_probe` input. It performs at most one paid request against public Conference Monkey HTML and has no database credentials. Ordinary pushes, PRs and scheduled runs never invoke this probe.
+
+The initial probe on 2026-11-07 reached OpenAI but returned HTTP 429. No usable AI links were produced, and no retry followed. The initial code did not record a provider subcode, so billing quota versus temporary rate limiting is not yet established. The implementation now reports recognized safe quota/rate codes. API availability must be resolved and a manual probe must pass before enabling normal paid enrichment.
+
