@@ -32,7 +32,7 @@ Do not select ads, social, login, payment, session/talk descriptions or unrelate
 
 
 def enabled():
-    return os.environ.get('AI_ENRICHMENT_ENABLED') == '1'
+    return os.environ.get('AI_ENRICHMENT_ENABLED') == '1' or os.environ.get('MANUS_BACKUP_ENABLED') == '1'
 
 
 class WorkerBudget:
@@ -108,7 +108,10 @@ class MiniEnricher:
         if fingerprint in self.cache:
             result=self.cache[fingerprint];self.audit['cache_hits']+=1;entry['status']='cached'
         else:
-            if not os.environ.get('OPENAI_API_KEY') and self.provider is ask:entry['reason']='missing_key';return []
+            if self.provider is ask and (os.environ.get('AI_ENRICHMENT_ENABLED')!='1' or not os.environ.get('OPENAI_API_KEY')):
+                from .manus_backup import fallback_report
+                entry['reason']='openai_disabled' if os.environ.get('AI_ENRICHMENT_ENABLED')!='1' else 'missing_key'
+                entry['backup']=fallback_report(entry['reason']);return []
             if self.deadline is not None and time.monotonic()+22>=self.deadline:entry['reason']='time_budget_exhausted';return []
             # UTF-8 bytes are a conservative input-token reservation. Actual usage
             # is reported separately; no refunds make the ceiling conservative.
@@ -128,6 +131,8 @@ class MiniEnricher:
                 self.audit['output_tokens']+=int(usage.get('output_tokens',0))
                 reason=str(exc) if str(exc) in ('missing_key','provider_http_401','provider_http_403','provider_http_429','provider_insufficient_quota','provider_rate_limit_exceeded','provider_organization_spend_limit_exceeded','provider_project_spend_limit_exceeded','incomplete_response','invalid_response') else 'provider_error'
                 entry.update(status='error',reason=reason)
+                from .manus_backup import fallback_report
+                entry['backup']=fallback_report(reason)
                 # No cascade of calls on provider/auth/quota/malformed output errors.
                 self.budget.stop(reason);return []
         allowed={n['id'] for n in payload['nodes']};out=[];seen=set()
