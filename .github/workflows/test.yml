@@ -8,9 +8,27 @@ on:
         description: 'Make one paid read-only OpenAI enrichment probe (no database writes)'
         default: false
         type: boolean
+      run_manus_probe:
+        description: 'Read-only Manus authentication and budget-readiness check (creates no task)'
+        default: false
+        type: boolean
 permissions:
   contents: read
 jobs:
+  manus-readiness:
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/feat/manus-backup') || (github.event_name == 'workflow_dispatch' && inputs.run_manus_probe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python -m scripts.probe_manus
+        env:
+          MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
+          MANUS_BACKUP_ENABLED: '1'
   ai-mini-enrichment-probe:
     # Paid checks are manual, separate from ordinary CI. No database credentials,
     # scheduled execution or fork/PR secret exposure.

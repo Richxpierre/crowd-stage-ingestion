@@ -28,6 +28,8 @@ jobs:
       AI_ENRICHMENT_ENABLED: ${{ vars.AI_ENRICHMENT_ENABLED }}
       OPENAI_CRAWLER_MODEL: ${{ vars.OPENAI_CRAWLER_MODEL }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      MANUS_BACKUP_ENABLED: ${{ vars.MANUS_BACKUP_ENABLED }}
+      MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
       SEARXNG_URL: http://127.0.0.1:8888
     steps:
       - uses: actions/checkout@v4

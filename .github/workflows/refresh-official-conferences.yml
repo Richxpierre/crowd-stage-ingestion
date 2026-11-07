@@ -33,6 +33,8 @@ jobs:
       AI_ENRICHMENT_ENABLED: ${{ vars.AI_ENRICHMENT_ENABLED }}
       OPENAI_CRAWLER_MODEL: ${{ vars.OPENAI_CRAWLER_MODEL }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      MANUS_BACKUP_ENABLED: ${{ vars.MANUS_BACKUP_ENABLED }}
+      MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
