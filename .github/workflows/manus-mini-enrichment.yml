@@ -1,0 +1,31 @@
+name: Process Manus mini enrichment
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: crowdstage-manus-mini
+  cancel-in-progress: false
+jobs:
+  enrich:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
+      MANUS_BACKUP_ENABLED: ${{ vars.MANUS_BACKUP_ENABLED }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python -m collector.manus_queue
+      - name: Publish readiness
+        if: always()
+        continue-on-error: true
+        run: python -m scripts.report_enrichment_status --authenticate-manus
+

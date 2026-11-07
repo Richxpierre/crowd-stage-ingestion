@@ -15,6 +15,24 @@ on:
 permissions:
   contents: read
 jobs:
+  manus-mini-live-probe:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/manus-mini-gate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
+      MANUS_BACKUP_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python -m scripts.probe_manus_mini
+      - if: always()
+        run: python -m scripts.report_enrichment_status --authenticate-manus
   enrichment-dashboard-status:
     if: github.event_name == 'push' && github.ref == 'refs/heads/feat/enrichment-observability'
     runs-on: ubuntu-24.04

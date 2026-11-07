@@ -14,10 +14,10 @@ class ManusTests(unittest.TestCase):
   session=Mock();response=Mock();response.status_code=200;response.content=b'{}';response.json.return_value=data
   session.request.return_value=response
   return ManusClient(session),session
- def test_strict_limit_blocks_create_before_any_network_call(self):
+ def test_direct_create_without_shared_claim_makes_no_network_call(self):
   client,session=self.client({})
-  with self.assertRaisesRegex(ManusError,'hard_token_cap_unavailable'):client.create(PAYLOAD)
-  session.request.assert_not_called();self.assertFalse(readiness()['task_creation_allowed'])
+  with self.assertRaisesRegex(ManusError,'shared_claim_required'):client.create(PAYLOAD)
+  session.request.assert_not_called();self.assertTrue(readiness()['task_creation_allowed'])
  def test_authentication_returns_no_personal_or_credential_data(self):
   client,session=self.client({'ok':True,'user':{'email':'private@example.org','name':'Private'}})
   data=client.authenticate();self.assertTrue(data['authenticated'])
@@ -54,22 +54,23 @@ class ManusTests(unittest.TestCase):
   with self.assertRaises(ManusError):client.task_status('../other?key=x')
   session.request.assert_not_called()
  def test_fallback_report_keeps_hard_limit_and_primary_failure(self):
-  r=fallback_report('provider_http_429');self.assertEqual(r['daily_limit'],2000)
-  self.assertEqual(r['daily_limit_unit'],'model_tokens');self.assertEqual(r['reason'],'manus_hard_token_cap_unavailable')
+  r=fallback_report('provider_http_429');self.assertTrue(r['task_creation_allowed'])
+  self.assertEqual(r['daily_limit_unit'],'credits');self.assertEqual(r['reason'],'manus_shared_usage_gate')
   self.assertEqual(r['primary_reason'],'provider_http_429')
- def test_manus_only_configuration_does_not_resume_openai(self):
+ def test_manus_only_configuration_queues_without_resuming_openai(self):
   from collector.mini_enrichment import MiniEnricher,WorkerBudget
-  with patch.dict(os.environ,{'AI_ENRICHMENT_ENABLED':'0','OPENAI_API_KEY':'unused'}):
+  with patch.dict(os.environ,{'AI_ENRICHMENT_ENABLED':'0','OPENAI_API_KEY':'unused'}),patch('collector.manus_queue.enqueue',return_value={'id':'job','status':'queued'}) as queue:
    ai=MiniEnricher(budget=WorkerBudget())
    self.assertEqual(ai.choose('event_location','https://organizer.org','Cloud',['country'],PAYLOAD['nodes']),[])
-   self.assertEqual(ai.audit['calls'],0)
-   self.assertEqual(ai.audit['passes'][0]['backup']['reason'],'manus_hard_token_cap_unavailable')
- def test_primary_failure_adds_backup_readiness_to_existing_report(self):
+   self.assertEqual(ai.audit['calls'],0);queue.assert_called_once()
+   self.assertEqual(ai.audit['passes'][0]['provider'],'manus')
+ def test_primary_failure_can_queue_manus_alternative(self):
   from collector.mini_enrichment import MiniEnricher,WorkerBudget
   def primary(payload):raise RuntimeError('provider_http_429')
-  ai=MiniEnricher(provider=primary,budget=WorkerBudget())
-  ai.choose('event_location','https://organizer.org','Cloud',['country'],PAYLOAD['nodes'])
-  self.assertEqual(ai.audit['passes'][0]['backup']['primary_reason'],'provider_http_429')
+  with patch('collector.manus_queue.enqueue',return_value={'id':'job','status':'queued'}):
+   ai=MiniEnricher(provider=primary,budget=WorkerBudget())
+   ai.choose('event_location','https://organizer.org','Cloud',['country'],PAYLOAD['nodes'])
+   self.assertEqual(ai.audit['passes'][0]['provider'],'manus')
 
 if __name__=='__main__':unittest.main()
 
