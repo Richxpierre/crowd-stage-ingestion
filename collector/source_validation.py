@@ -154,6 +154,8 @@ async def _validate_site(candidate,reader,search):
         single=len(editions)==1 and len(all_editions)==1
         source['selectors']['single_event']=single
         plan={};results={}
+        from .mini_enrichment import MiniEnricher,enrich_pass
+        ai=candidate.get('_mini_enricher') or MiniEnricher((candidate.get('report') or {}).get('ai_enrichment'))
         for kind in PASS_TYPES:
             initial=extract_pass(kind,pages,source,{})[:50]
             targets=list(dict.fromkeys(r['evidence']['page_url'] for r in initial))
@@ -172,14 +174,16 @@ async def _validate_site(candidate,reader,search):
                     proposed={json.dumps(r['fields'][field],sort_keys=True) for r in trial if field in r['fields']}
                     if len(expected)!=1 or proposed!=expected:config['selectors'].pop(field)
             extracted=extract_pass(kind,{u:pages[u] for u in config['page_urls']},source,config)[:50]
+            extracted,config=await asyncio.to_thread(enrich_pass,kind,{u:pages[u] for u in config['page_urls']},source,config,extracted,ai)
             plan[kind]=config
             results[kind]={'status':'success' if extracted else 'missing','results':extracted,'errors':[]}
         assembled=assemble(results,source)
+        audit['ai_enrichment']=ai.audit
         current=[r for r in assembled if r['end_date']>=today and int(r['start_date'][:4])<=date.today().year+2 and r.get('status')!='cancelled']
         audit.update(event_evidence=[{'title':r['title'],'start_date':r['start_date'],'end_date':r['end_date'],'url':r['event_url'],'page_url':r['source_url']} for r in current][:20],
                      pass_results=results,search_matches=search_matches)
         audit['past_events']=[{'title':r['title'],'start_date':r['start_date'],'end_date':r['end_date']} for r in raw if r['end_date']<today][:5]
-        outcome['parse_settings']={'website_only':True,'render':True,'max_pages':8,'single_event':single,'parse_passes':plan}
+        outcome['parse_settings']={'website_only':True,'render':True,'max_pages':8,'single_event':single,'parse_passes':plan,'ai_enrichment':ai.audit}
         critical={'city','country','region','venue'}
         optional=sorted({field for r in current for field in r.get('extraction',{}).get('conflicting_fields',[]) if field not in critical})
         audit['warnings']=([{'code':'optional_conflicts','fields':optional,'message':'Conflicting optional values stay unknown; they do not invalidate the website.'}] if optional else [])
@@ -202,7 +206,14 @@ async def _validate_site(candidate,reader,search):
 
 async def validate_website(candidate,reader,search):
     from .validation_recovery import validate_with_recovery
-    return await validate_with_recovery(candidate,reader,search,_validate_site)
+    from .mini_enrichment import MiniEnricher
+    candidate={**candidate,'_mini_enricher':MiniEnricher((candidate.get('report') or {}).get('ai_enrichment'))}
+    async def evaluate(item,bounded,finder):
+        # The recovery controller allows 45 seconds per strategy. Optional AI
+        # must leave time for deterministic results to be returned and saved.
+        item['_mini_enricher'].deadline=time.monotonic()+40
+        return await _validate_site(item,bounded,finder)
+    return await validate_with_recovery(candidate,reader,search,evaluate)
 
 async def run(limit=5,validation_id=None,dry_run=False):
     from .client import Client
@@ -232,4 +243,5 @@ def main():
     parser.add_argument('--limit',type=int,default=5);parser.add_argument('--validation-id');parser.add_argument('--dry-run',action='store_true')
     args=parser.parse_args();asyncio.run(run(args.limit,args.validation_id,args.dry_run))
 if __name__=='__main__':main()
+
 

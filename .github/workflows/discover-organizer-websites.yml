@@ -24,6 +24,9 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT }}
+      AI_ENRICHMENT_ENABLED: ${{ vars.AI_ENRICHMENT_ENABLED }}
+      OPENAI_CRAWLER_MODEL: ${{ vars.OPENAI_CRAWLER_MODEL }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -79,4 +82,5 @@ jobs:
           job=json.loads((Path(os.environ['RUNNER_TEMP'])/'crawl-job.json').read_text())
           Client().update_crawl_job(job['id'],{'status':'failed','summary':'Crawler worker failed; inspect GitHub Actions logs and retry','completed_at':datetime.now(timezone.utc).isoformat()})
           PY
+
 

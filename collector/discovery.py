@@ -110,6 +110,9 @@ async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
     stats={'pages_scanned':0,'links_found':0,'sources_added':0,'duplicates':0,'needs_review':0,'rejected':0}
     errors=[];queue=[(seed,0)];visited=set();successful=[];outbound=set();fallback_seeds_added=False;cancelled=False
     config={**config,'settings':{**settings,'discovery_mode':'website_links'}}
+    from .mini_enrichment import MiniEnricher,discover_links as ai_discover
+    ai=MiniEnricher(config.get('ai_enrichment'),deadline=deadline)
+    config['ai_enrichment']=ai.audit
     search_candidates={};search_report={'enabled':settings.get('search_enabled') is True,'requests':0,'results':0,'pages_checked':0,'warnings':[]}
     config['search_report']=search_report
     db.update_crawl_job(job['id'],{'config':config})
@@ -174,6 +177,10 @@ async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
                     else:stats['rejected']+=1
                     continue
                 internal,candidates=classify_links(page,seed,settings)
+                if not internal and not candidates:
+                    proposed=await asyncio.to_thread(ai_discover,page,seed,ai)
+                    internal=[x['url'] for x in proposed if x['task_kind']=='page']
+                    candidates=[{'url':x['url'],'label':x['payload'].get('title',''),'ai':True} for x in proposed if x['task_kind']=='source']
                 if depth<depth_limit:
                     queue.extend((target,depth+1) for target in internal if target not in visited and (target not in recent or re.search(r'\.xml$|[?&]page=|/top/|/page/',target)) and target not in {u for u,_ in queue})
                     queue=queue[:500]
@@ -185,8 +192,8 @@ async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
                     try:
                         title_node=BeautifulSoup(page['html'],'html.parser').find('h1')
                         title=title_node.get_text(' ',strip=True)[:240] if title_node else None
-                        result=db.record_discovery(job['id'],page['url'],candidate['url'],'linked',title,None,None,
-                            {'method':'aggregator_website_link','link_label':candidate['label'][:300]},
+                        result=db.record_discovery(job['id'],page['url'],candidate['url'],'needs_review' if candidate.get('ai') else 'linked',title,None,None,
+                            {'method':'ai_observed_link' if candidate.get('ai') else 'aggregator_website_link','requires_review':bool(candidate.get('ai')),'link_label':candidate['label'][:300]},
                             'Organizer website button URL saved; event parsing is queued separately')
                         key={'added':'sources_added','existing':'duplicates','needs_review':'needs_review','rejected':'rejected'}[result['status']]
                         stats[key]+=1
@@ -250,3 +257,4 @@ def main():
         raise
 
 if __name__=='__main__':main()
+

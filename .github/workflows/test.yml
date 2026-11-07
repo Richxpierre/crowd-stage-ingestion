@@ -2,9 +2,38 @@ name: Backend checks
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      run_ai_probe:
+        description: 'Make one paid read-only OpenAI enrichment probe (no database writes)'
+        default: false
+        type: boolean
 permissions:
   contents: read
 jobs:
+  ai-mini-enrichment-probe:
+    # Paid checks are manual, separate from ordinary CI. No database credentials,
+    # scheduled execution or fork/PR secret exposure.
+    if: github.event_name == 'workflow_dispatch' && inputs.run_ai_probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m scripts.probe_mini_enrichment
+        env:
+          AI_ENRICHMENT_ENABLED: '1'
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_CRAWLER_MODEL: ${{ vars.OPENAI_CRAWLER_MODEL }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ai-mini-enrichment-probe
+          path: mini-enrichment-probe.json
   source-validator-integration:
     runs-on: ubuntu-24.04
     timeout-minutes: 12
@@ -82,4 +111,5 @@ jobs:
         env:
           RUN_CRAWLER_TESTS: '1'
           CRAWL4_AI_BASE_DIRECTORY: ${{ runner.temp }}/crowdstage-crawler
+
 

@@ -179,6 +179,8 @@ def extract_pass(kind, pages, source, config, on_page=None):
     return results
 
 def collect_passes(fetcher, source, selected=None, on_result=None):
+    from .mini_enrichment import MiniEnricher,enrich_pass
+    ai=MiniEnricher((source.get('discovery_report') or {}).get('ai_enrichment') or (source.get('selectors') or {}).get('ai_enrichment'))
     selected=tuple(selected or PASS_TYPES)
     if any(p not in PASS_TYPES for p in selected): raise ValueError('Unknown parse pass')
     options=(source.get('selectors') or {}).get('parse_passes') or {}
@@ -186,6 +188,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
     root=clean_url(source['url'])
     if not root: raise ValueError('Source must be HTTPS')
     fetcher.deadline=time.monotonic()+150
+    ai.deadline=fetcher.deadline
     max_pages=max(1,min(int((source.get('selectors') or {}).get('max_pages',8)),20))
     live={kind:dict(status='running',started_at=now(),results=[],errors=[],
         progress_stage='collecting',pages_done=0,pages_total=max_pages,heartbeat_at=now()) for kind in selected}
@@ -249,6 +252,10 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
                     item.update(pages_done=item['pages_done']+1,heartbeat_at=now())
                     if on_result:on_result(kind,dict(item))
                 item['results']=extract_pass(kind,chosen,source,cfg,on_page=page_done)
+                item['results'],_=enrich_pass(kind,chosen,source,cfg,item['results'],ai)
+                if kind=='event_date' and len(item['results'])==1:
+                    source={**source,'_ai_event_identity':item['results'][0]}
+                item['ai_enrichment']={k:v for k,v in ai.audit.items() if k!='cache'}
                 item['status']='partial' if item['results'] and item['errors'] else 'success' if item['results'] else 'failed' if item['errors'] else 'missing'
         except Exception as exc:
             item.update(status='failed',errors=[{'message':str(exc)[:500]}])
@@ -256,7 +263,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
         report[kind]=item
         if on_result:on_result(kind,item)
     return report,dict(mode='four_pass',started_at=started,pages=list(pages),pages_checked=len(pages),
-                       errors=[{'url':u,'message':m} for u,m in errors.items()],parse_passes=report)
+                       errors=[{'url':u,'message':m} for u,m in errors.items()],parse_passes=report,ai_enrichment=ai.audit)
 
 def assemble(report, source):
     """Join independent facts only when there is one matching edition candidate."""
@@ -325,3 +332,4 @@ def retain_known_optional(records, observations, publisher):
         record['extraction']['retained_previous_fields']=retained
         _finish(record,publisher,record['source_record_id'])
     return records
+
