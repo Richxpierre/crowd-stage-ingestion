@@ -1,31 +1,28 @@
-# Manus backup adapter
+# Manus mini enrichment
 
-The ingestion worker has a Manus v2 adapter and fallback-readiness reporting. This is **not active agent enrichment**: task creation remains blocked because the requested hard limit is 2,000 model tokens per day and Manus does not expose an enforceable task-token ceiling.
+Manus is the evidence-selection alternative while OpenAI is paused. Deterministic extraction runs first. Only missing fields are queued. Results contain observed node IDs, are rechecked against the current snapshot, and re-enter normal validation/publication review. No generated facts are directly published.
 
-## What is connected
+## Credit admission trigger
 
-- Repository secret `MANUS_API_KEY`, available only to backend workflows.
-- Optional `MANUS_BACKUP_ENABLED=1` enables readiness reporting in mini-enrichment reports; it cannot bypass the budget gate.
-- Missing/disabled OpenAI and primary-provider failures attach a `backup` report containing the Manus configuration state and the reason it could not run.
-- Read-only `user.me` authentication, task status/credit usage, and one-page structured-output retrieval for an existing task.
-- Stop support for an explicitly supplied task ID. No task resumption, follow-up messages, automatic confirmation or polling loops.
-- Private/lite task-payload preparation, at most 2,000 prompt bytes, connectors cleared, no source URLs in the prompt, and strict observed-node result validation. This payload is never submitted by the current implementation.
-- A read-only Backend checks `run_manus_probe` input. It authenticates and publishes readiness metadata to the admin dashboard without creating a task or changing Sources/events.
+The account currently reports 300 daily refresh credits, rather than the earlier assumed 2,000 model tokens. The worker reads usage.availableCredits and bounded usage.list pages before claiming any paid task. It uses only daily refresh credits, never add-on/subscription balances. At most 80% of the smaller of the live daily allowance and 2,000 credits is admitted; at least 50 credits are reserved. A new task reserves at least 50 credits, rising to 1.5 times the largest recent observed task cost. This is a soft admission policy, not a promise that an already-running Manus agent cannot overshoot.
 
-## Budget behavior
+A Supabase advisory transaction lock and one global active task prevent simultaneous GitHub workers from overspending the same snapshot. Account-wide consumption, available daily balance, completed task costs and unsettled reservations all constrain admission. Low/unknown balance pauses new submissions. The exact provider reset time defines the period; the next fresh usage snapshot allows queued work to continue automatically. Unknown submission outcomes are held without resubmission to avoid duplicate charges.
 
-`ManusClient.create()` rejects with `manus_hard_token_cap_unavailable` **before any network request**. Prompt bytes are not token usage, and neither one task per day nor post-task credit accounting can guarantee a ceiling on an agent's internal model tokens. `credits_used` and `tokens_used` remain separate; unknown token usage is reported as null.
+## Async lifecycle
 
-There is no daily spending ledger in this change because there are no permitted generation calls to reserve or charge. A future credits-based policy would require explicit agreement on its unit and possible per-task overshoot, plus a transactional shared daily ledger across GitHub workers. A local file/process counter is not an adequate daily limit.
+Collectors enqueue at most three small requests per item and reuse fingerprints. They never wait for an agent or call task.create. Process Manus mini enrichment runs every five minutes, submits at most one admitted task per invocation, and reconciles its status/results. It does not resume agent questions or confirmations. Waiting/overlong tasks receive one stop request. Structured results use a maximum of eight observed selections, no fabricated URLs or values. The prompt is at most 2,000 bytes, lite/private, with connectors cleared and instructions to avoid browsing/tools.
 
-The API credential was previously verified by read-only authentication. It is not committed in code, test fixtures, artifacts, task prompts or reports. OpenAI stays paused; the Manus feature does not unpause any aggregators, create Sources, modify events or publish listings.
+When a result is ready, matching Sources/validation rows become due for their normal guarded checks. Changed page evidence has a different fingerprint and does not reuse stale selections. Unknown usage is never described as zero model tokens. A failed task with unreported usage keeps its reservation for that period.
 
-## Official references
+## Dashboard and controls
 
-- [Authentication](https://open.manus.ai/docs/v2/authentication)
-- [Create task: asynchronous agent, lite profile and connector controls](https://open.manus.ai/docs/v2/task.create)
-- [Structured output: post-processing after the agent runs](https://open.manus.ai/docs/v2/structured-output)
-- [Credit consumption and possible negative balances](https://help.manus.im/en/articles/11711097-what-are-the-rules-for-credits-consumption-and-how-can-i-obtain-them)
+/admin/enrichment shows the live allowance, available credits, period consumption, 80% trigger, reset time, queue/task states and actual reported credits. Admins can pause/resume new submissions; this does not resume or create agent follow-ups. OpenAI's existing opt-in remains off. MANUS_BACKUP_ENABLED=0 explicitly disables Manus; otherwise the saved key and database gate enable the alternative.
 
-The admin dashboard is `/admin/enrichment`. Regular worker heartbeats update OpenAI configuration without model calls. The Manus card retains the last explicit read-only authentication check; configuration-only heartbeats do not erase its result. Run Backend checks with `run_manus_probe` to refresh it.
+The signed webhook receiver records notifications and matches known task IDs. Polling remains available when a webhook is not registered. Neither callbacks nor the Manus worker apply generated event facts directly.
+
+## Credentials and verification
+
+MANUS_API_KEY remains a repository secret. API keys, raw account profiles and reasoning transcripts are never persisted in task reports or dashboard records. A branch-specific live probe uses a real public organizer snapshot and at most one paid task; repeat pushes reuse its queue fingerprint. Ordinary unit tests do not use paid APIs.
+
+Official API references: https://open.manus.ai/docs/v2/task.create, https://open.manus.ai/docs/v2/task-lifecycle, https://open.manus.ai/docs/v2/usage.list.
 

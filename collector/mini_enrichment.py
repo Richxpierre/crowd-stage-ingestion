@@ -32,7 +32,8 @@ Do not select ads, social, login, payment, session/talk descriptions or unrelate
 
 
 def enabled():
-    return os.environ.get('AI_ENRICHMENT_ENABLED') == '1' or os.environ.get('MANUS_BACKUP_ENABLED') == '1'
+    from .manus_backup import configured
+    return os.environ.get('AI_ENRICHMENT_ENABLED') == '1' or configured()
 
 
 class WorkerBudget:
@@ -108,33 +109,35 @@ class MiniEnricher:
         if fingerprint in self.cache:
             result=self.cache[fingerprint];self.audit['cache_hits']+=1;entry['status']='cached'
         else:
-            if self.provider is ask and (os.environ.get('AI_ENRICHMENT_ENABLED')!='1' or not os.environ.get('OPENAI_API_KEY')):
-                from .manus_backup import fallback_report
-                entry['reason']='openai_disabled' if os.environ.get('AI_ENRICHMENT_ENABLED')!='1' else 'missing_key'
-                entry['backup']=fallback_report(entry['reason']);return []
+            if self.calls>=3:entry['reason']='budget_exhausted';return []
             if self.deadline is not None and time.monotonic()+22>=self.deadline:entry['reason']='time_budget_exhausted';return []
-            # UTF-8 bytes are a conservative input-token reservation. Actual usage
-            # is reported separately; no refunds make the ceiling conservative.
-            reservation=len(json.dumps(payload,ensure_ascii=True).encode())+len(INSTRUCTIONS.encode())+MAX_OUTPUT_TOKENS+1000
-            if self.calls>=3 or not self.budget.reserve(reservation):entry['reason']=self.budget.stopped or 'budget_exhausted';return []
-            self.calls+=1;self.audit['calls']+=1
-            try:
-                result,usage=self.provider(payload)
-                if not isinstance(result,dict) or set(result)!={'selections'} or not isinstance(result['selections'],list) or len(result['selections'])>8:
-                    raise ValueError('invalid_response')
-                self.audit['input_tokens']+=int(usage.get('input_tokens',0))
-                self.audit['output_tokens']+=int(usage.get('output_tokens',0))
-                entry['status']='completed'
-            except Exception as exc:
-                usage=getattr(exc,'usage',{})
-                self.audit['input_tokens']+=int(usage.get('input_tokens',0))
-                self.audit['output_tokens']+=int(usage.get('output_tokens',0))
-                reason=str(exc) if str(exc) in ('missing_key','provider_http_401','provider_http_403','provider_http_429','provider_insufficient_quota','provider_rate_limit_exceeded','provider_organization_spend_limit_exceeded','provider_project_spend_limit_exceeded','incomplete_response','invalid_response') else 'provider_error'
-                entry.update(status='error',reason=reason)
-                from .manus_backup import fallback_report
-                entry['backup']=fallback_report(reason)
-                # No cascade of calls on provider/auth/quota/malformed output errors.
-                self.budget.stop(reason);return []
+            primary=self.provider is not ask or os.environ.get('AI_ENRICHMENT_ENABLED')=='1' and bool(os.environ.get('OPENAI_API_KEY'))
+            result=None
+            if primary:
+                reservation=len(json.dumps(payload,ensure_ascii=True).encode())+len(INSTRUCTIONS.encode())+MAX_OUTPUT_TOKENS+1000
+                if not self.budget.reserve(reservation):entry['reason']=self.budget.stopped or 'budget_exhausted';return []
+                self.calls+=1;self.audit['calls']+=1
+                try:
+                    result,usage=self.provider(payload)
+                    if not isinstance(result,dict) or set(result)!={'selections'} or not isinstance(result['selections'],list) or len(result['selections'])>8:raise ValueError('invalid_response')
+                    self.audit['input_tokens']+=int(usage.get('input_tokens',0));self.audit['output_tokens']+=int(usage.get('output_tokens',0))
+                    entry['status']='completed'
+                except Exception as exc:
+                    usage=getattr(exc,'usage',{});self.audit['input_tokens']+=int(usage.get('input_tokens',0));self.audit['output_tokens']+=int(usage.get('output_tokens',0))
+                    entry.update(status='error',reason=str(exc) if str(exc) in ('missing_key','provider_http_401','provider_http_403','provider_http_429','provider_insufficient_quota','provider_rate_limit_exceeded','incomplete_response','invalid_response') else 'provider_error')
+                    self.budget.stop(entry['reason'])
+            if result is None:
+                from .manus_backup import configured,ManusError
+                if not configured():entry.setdefault('reason','openai_disabled');return []
+                self.calls+=1
+                try:
+                    from .manus_queue import enqueue
+                    queued=enqueue(payload)
+                    entry.update(provider='manus',job_id=queued['id'],reason=queued.get('reason') or 'manus_pending',status=queued['status'])
+                    if queued['status']!='completed':return []
+                    result=queued['result']
+                except Exception as exc:
+                    entry.update(status='skipped',reason=str(exc) if isinstance(exc,ManusError) else 'manus_queue_unavailable');return []
         allowed={n['id'] for n in payload['nodes']};out=[];seen=set()
         for row in result['selections']:
             if not isinstance(row,dict) or set(row)!={'field','node_id'}:continue
@@ -142,10 +145,10 @@ class MiniEnricher:
             if field not in fields or type(node) is not int or node not in allowed or (field,node) in seen:continue
             seen.add((field,node));out.append(row)
         entry['selected_fields']=sorted({r['field'] for r in out})
-        # Store only a sanitized, bounded selection; re-verify against current HTML.
         self.cache[fingerprint]={'selections':out}
         while len(self.cache)>32:self.cache.pop(next(iter(self.cache)))
         return out
+
 
 
 def field_nodes(body, kind):
