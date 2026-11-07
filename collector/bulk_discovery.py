@@ -43,10 +43,13 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
     config=job['config'];settings=config.get('settings',{});seed=config['url'];adapter=settings['adapter']
     generation=hashlib.sha256((seed+'|'+adapter+'|v1|'+str(settings.get('dashboard_reset_at',''))).encode()).hexdigest()[:24]
     config={**config,'bulk_generation':generation}
+    from .mini_enrichment import MiniEnricher,discover_links as ai_discover
+    ai=MiniEnricher(config.get('ai_enrichment'))
     db.update_crawl_job(job['id'],{'config':config})
     db.enqueue_frontier(job,generation,[task(seed,phase='listing')])
     stats={'pages_scanned':0,'links_found':0,'sources_added':0,'duplicates':0,'needs_review':0,'rejected':0}
     errors=[];cancelled=False;processed=0;deadline=time.monotonic()+max(1,min(float(config.get('bulk_batch_seconds',180)),360))
+    ai.deadline=deadline
     page_limit=max(1,min(int(config.get('max_pages',50)),100));source_limit=max(1,min(int(config.get('max_sources',50)),50))
     def heartbeat():
         s=db.crawl_job(job['id'])
@@ -75,17 +78,35 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
                 page=await reader.read(item['url'])
                 try:children=extract(page,adapter,seed)
                 except ValueError:
-                    if not hasattr(reader,'read_rendered'):raise
-                    page=await reader.read_rendered(item['url'])
-                    children=extract(page,adapter,seed)
+                    if hasattr(reader,'read_rendered'):
+                        page=await reader.read_rendered(item['url'])
+                    try:children=extract(page,adapter,seed)
+                    except ValueError:
+                        children=await asyncio.to_thread(ai_discover,page,seed,ai)
+                        if not children:raise
                 if not heartbeat():cancelled=True;break
-                db.enqueue_frontier(job,generation,children)
+                # AI-selected links need ownership review; the deterministic bulk
+                # admission RPC intentionally only accepts known adapter evidence.
+                safe_children=[]
+                for child in children:
+                    evidence=child.get('payload',{}).get('evidence',{})
+                    if child['task_kind']=='source' and evidence.get('method')=='ai_observed_link':
+                        if not heartbeat():cancelled=True;break
+                        result=db.record_discovery(job['id'],page['url'],child['url'],'needs_review',
+                            child['payload'].get('title'),None,None,evidence,'AI-selected observed website link; organizer review required')
+                        stats['links_found']+=1
+                        if result['status']=='needs_review':stats['needs_review']+=1
+                        elif result['status']=='existing':stats['duplicates']+=1
+                    else:safe_children.append(child)
+                if cancelled:break
+                db.enqueue_frontier(job,generation,safe_children)
                 db.finish_frontier(job['id'],item['id'])
             except Exception as exc:
                 errors.append({'url':item['url'],'message':str(exc)[:400]})
                 db.fail_frontier(job['id'],item,str(exc)[:400])
         progress=db.frontier_progress(job['id'])
         progress.update(getattr(reader,'stats',{}));config['bulk_progress']=progress
+        config['ai_enrichment']=ai.audit
         if progress.get('failed_tasks'):
             errors.extend({'url':item['url'],'message':item.get('last_error') or 'Saved task exhausted retries'}
                           for item in db.frontier_errors(job['target_id'],generation))
@@ -95,3 +116,4 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
     db.update_crawl_job(job['id'],{**stats,'config':config,'status':status,'errors':errors[-50:],'summary':message,
         'completed_at':datetime.now(timezone.utc).isoformat()})
     return {**stats,'status':status,'bulk_progress':progress}
+
