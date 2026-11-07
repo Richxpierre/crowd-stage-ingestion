@@ -180,7 +180,7 @@ def extract_pass(kind, pages, source, config, on_page=None):
 
 def collect_passes(fetcher, source, selected=None, on_result=None):
     from .mini_enrichment import MiniEnricher,enrich_pass
-    ai=MiniEnricher((source.get('discovery_report') or {}).get('ai_enrichment'))
+    ai=MiniEnricher((source.get('discovery_report') or {}).get('ai_enrichment') or (source.get('selectors') or {}).get('ai_enrichment'))
     selected=tuple(selected or PASS_TYPES)
     if any(p not in PASS_TYPES for p in selected): raise ValueError('Unknown parse pass')
     options=(source.get('selectors') or {}).get('parse_passes') or {}

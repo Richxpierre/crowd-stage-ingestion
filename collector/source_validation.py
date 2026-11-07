@@ -183,7 +183,7 @@ async def _validate_site(candidate,reader,search):
         audit.update(event_evidence=[{'title':r['title'],'start_date':r['start_date'],'end_date':r['end_date'],'url':r['event_url'],'page_url':r['source_url']} for r in current][:20],
                      pass_results=results,search_matches=search_matches)
         audit['past_events']=[{'title':r['title'],'start_date':r['start_date'],'end_date':r['end_date']} for r in raw if r['end_date']<today][:5]
-        outcome['parse_settings']={'website_only':True,'render':True,'max_pages':8,'single_event':single,'parse_passes':plan}
+        outcome['parse_settings']={'website_only':True,'render':True,'max_pages':8,'single_event':single,'parse_passes':plan,'ai_enrichment':ai.audit}
         critical={'city','country','region','venue'}
         optional=sorted({field for r in current for field in r.get('extraction',{}).get('conflicting_fields',[]) if field not in critical})
         audit['warnings']=([{'code':'optional_conflicts','fields':optional,'message':'Conflicting optional values stay unknown; they do not invalidate the website.'}] if optional else [])

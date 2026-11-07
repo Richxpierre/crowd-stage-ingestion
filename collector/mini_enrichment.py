@@ -67,7 +67,7 @@ def ask(payload):
         client.trust_env = False
         response = client.post('https://api.openai.com/v1/responses', headers={
             'Authorization':'Bearer '+key}, json={
-            'model':os.environ.get('OPENAI_CRAWLER_MODEL', MODEL_DEFAULT),
+            'model':(os.environ.get('OPENAI_CRAWLER_MODEL') or MODEL_DEFAULT),
             'store':False,'instructions':INSTRUCTIONS,'input':json.dumps(payload,ensure_ascii=True),
             'max_output_tokens':MAX_OUTPUT_TOKENS,
             'text':{'format':{'type':'json_schema','name':'evidence_selection','strict':True,'schema':SCHEMA}}},
@@ -99,7 +99,7 @@ class MiniEnricher:
         self.audit['passes'].append(entry)
         if not fields or not payload['nodes']:entry['reason']='no_missing_fields_or_evidence';return []
         if not enabled():entry['reason']='disabled';return []
-        fingerprint=hashlib.sha256(json.dumps([VERSION,os.environ.get('OPENAI_CRAWLER_MODEL',MODEL_DEFAULT),payload],sort_keys=True).encode()).hexdigest()
+        fingerprint=hashlib.sha256(json.dumps([VERSION,(os.environ.get('OPENAI_CRAWLER_MODEL') or MODEL_DEFAULT),payload],sort_keys=True).encode()).hexdigest()
         if fingerprint in self.cache:
             result=self.cache[fingerprint];self.audit['cache_hits']+=1;entry['status']='cached'
         else:
@@ -170,6 +170,7 @@ def field_nodes(body, kind):
 def enrich_pass(kind,pages,source,config,results,enricher):
     """Fill absent fields only, on a single known edition. Existing facts win."""
     from .parse_passes import FIELDS,overrides,extract_pass
+    if not enabled():return results,config
     if not (source.get('selectors') or {}).get('single_event'):return results,config
     # Critical dates require independent deterministic extraction. AI may map their
     # selectors but cannot manufacture an event identity or upgrade ambiguous dates.
@@ -206,6 +207,7 @@ def enrich_pass(kind,pages,source,config,results,enricher):
                 code=country_code(values[field])
                 if code:values[field]=COUNTRIES[code][0]
                 else:values.pop(field)
+            elif field=='price_currency' and not re.fullmatch(r'[A-Z]{3}',values[field]):values.pop(field)
             elif field in ('format','event_kind'):
                 raw=values[field]
                 inferred=infer(('<main><h1>'+raw+'</h1><p>'+raw+'</p></main>').encode(),url,raw, single_event=True)
