@@ -42,6 +42,9 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r requirements.txt -r requirements-crawler.txt
+      - name: Report enrichment configuration (no paid API calls)
+        continue-on-error: true
+        run: python -m scripts.report_enrichment_status
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright

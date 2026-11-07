@@ -1,0 +1,21 @@
+import json
+import os
+import unittest
+from unittest.mock import Mock,patch
+from scripts.report_enrichment_status import publish
+
+class StatusTests(unittest.TestCase):
+ def test_publishes_configuration_without_keys_or_paid_requests(self):
+  with patch.dict(os.environ,{'OPENAI_API_KEY':'private-openai','MANUS_API_KEY':'private-manus','AI_ENRICHMENT_ENABLED':'','MANUS_BACKUP_ENABLED':''}),patch('scripts.report_enrichment_status.ManusClient') as client:
+   db=Mock();reports=publish(db)
+   self.assertEqual(db.request.call_count,2);client.assert_not_called()
+   self.assertFalse(reports['openai']['task_creation_allowed']);self.assertFalse(reports['manus']['task_creation_allowed'])
+   self.assertNotIn('private-openai',json.dumps(reports));self.assertNotIn('private-manus',json.dumps(reports))
+ def test_explicit_read_only_authentication_publishes_result(self):
+  with patch('scripts.report_enrichment_status.ManusClient') as client:
+   client.return_value.authenticate.return_value={'authenticated':True,'configured':False,'credential_available':True,'task_creation_allowed':False}
+   reports=publish(Mock(),True)
+   self.assertTrue(reports['manus']['authenticated']);client.return_value.close.assert_called_once()
+
+if __name__=='__main__':unittest.main()
+
