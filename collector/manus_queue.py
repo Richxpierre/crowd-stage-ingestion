@@ -78,9 +78,19 @@ def tick(db,client):
     patch(db,job,{'task_id':task,'status':'running','reason':'manus_pending'})
     return {'reason':'manus_pending','id':job['id'],'task_id':task}
 
+def settle_finished(db,client):
+    from datetime import timedelta
+    rows=db.request('GET','conference_manus_jobs',params={'status':'in.(completed,failed)','credits_used':'is.null',
+        'task_id':'not.is.null','started_at':'gte.'+(datetime.now(timezone.utc)-timedelta(days=7)).isoformat(),
+        'select':'*','order':'checked_at.asc.nullsfirst','limit':'5'})
+    for job in rows:
+        state=client.task_status(job['task_id'])
+        patch(db,job,{'credits_used':state['credits_used'],'checked_at':datetime.now(timezone.utc).isoformat()})
+
 def main():
     db=Client();client=ManusClient();deadline=time.monotonic()+150
     try:
+        settle_finished(db,client)
         while time.monotonic()<deadline:
             result=tick(db,client);print(json.dumps(result))
             if result['reason'] not in ('manus_pending','pending'):break
