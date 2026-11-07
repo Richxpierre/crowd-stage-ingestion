@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import Mock,patch
 from datetime import datetime,timezone
 from collector.manus_backup import ManusClient,ManusError
-from collector.manus_queue import enqueue,tick
+from collector.manus_queue import enqueue,tick,settle_finished
 
 PAYLOAD={'stage':'event_location','url':'https://organizer.example/event','event':'Cloud Conference','fields':['country'],'nodes':[{'id':0,'value':'France','context':'Venue country'}]}
 class QueueTests(unittest.TestCase):
@@ -45,6 +45,18 @@ class QueueTests(unittest.TestCase):
   db=Mock();db.request.return_value=[];client=Mock();client.usage.side_effect=ManusError('manus_usage_unknown')
   with self.assertRaises(ManusError):tick(db,client)
   client.create.assert_not_called()
+ def test_running_task_hits_low_balance_trigger_and_stop_is_not_repeated(self):
+  job={'id':'job','claim_token':'claim','status':'running','task_id':'task123','payload':PAYLOAD,'started_at':datetime.now(timezone.utc).isoformat()}
+  db=Mock();db.request.side_effect=lambda method,path,**kwargs:[job] if method=='GET' else None
+  client=Mock();client.task_status.return_value={'status':'running','credits_used':250,'background_running':False}
+  client.usage.return_value={'allowance':300,'available':50,'spent':250,'reset_at':'future'}
+  tick(db,client);client.stop.assert_called_once_with('task123');client.create.assert_not_called()
+  job['reason']='manus_stop_requested';tick(db,client);client.stop.assert_called_once()
+ def test_late_credit_settlement_does_not_create_or_wake_tasks(self):
+  job={'id':'job','claim_token':'claim','task_id':'task123'}
+  db=Mock();db.request.side_effect=[[job],None];client=Mock();client.task_status.return_value={'credits_used':7}
+  settle_finished(db,client)
+  self.assertEqual(db.request.call_args.kwargs['json']['credits_used'],7);client.create.assert_not_called()
 
 if __name__=='__main__':unittest.main()
 

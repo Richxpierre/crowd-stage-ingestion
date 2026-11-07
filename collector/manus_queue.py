@@ -35,6 +35,7 @@ def reconcile(db,client,job):
             'reason':'manus_daily_buffer_reached' if low else 'manus_task_in_flight' if state['status']=='running' else 'manus_ready'})
     except ManusError:
         low=True
+        db.request('PATCH','conference_manus_gate',params={'id':'eq.true'},json={'reason':'manus_usage_unknown'})
     if low and (state['status'] in ('running','pending') or state['background_running']):
         if job.get('reason')!='manus_stop_requested':
             client.stop(job['task_id']);patch(db,job,{'reason':'manus_stop_requested'})
