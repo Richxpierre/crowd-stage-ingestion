@@ -43,10 +43,14 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
-      - run: python -m scripts.probe_manus
+      - run: python -m scripts.report_enrichment_status --authenticate-manus
         env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AI_ENRICHMENT_ENABLED: ${{ vars.AI_ENRICHMENT_ENABLED }}
           MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
-          MANUS_BACKUP_ENABLED: '1'
+          MANUS_BACKUP_ENABLED: ${{ vars.MANUS_BACKUP_ENABLED }}
   ai-mini-enrichment-probe:
     # Paid checks are manual, separate from ordinary CI. No database credentials,
     # scheduled execution or fork/PR secret exposure.

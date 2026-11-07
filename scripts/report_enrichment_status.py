@@ -17,6 +17,9 @@ def publish(db,authenticate_manus=False):
         except ManusError as exc:reports['manus'].update(authenticated=False,reason=str(exc))
         finally:client.close()
     for provider,report in reports.items():
+        # The Manus card is the last explicit authentication check, with its own
+        # checked_at. A configuration-only heartbeat must not erase that result.
+        if provider=='manus' and not authenticate_manus:continue
         db.request('POST','rpc/report_enrichment_provider',json={'p_provider':provider,'p_report':report})
     return reports
 
