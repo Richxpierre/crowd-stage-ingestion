@@ -253,6 +253,8 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
                     if on_result:on_result(kind,dict(item))
                 item['results']=extract_pass(kind,chosen,source,cfg,on_page=page_done)
                 item['results'],_=enrich_pass(kind,chosen,source,cfg,item['results'],ai)
+                if kind=='event_date' and len(item['results'])==1:
+                    source={**source,'_ai_event_identity':item['results'][0]}
                 item['ai_enrichment']={k:v for k,v in ai.audit.items() if k!='cache'}
                 item['status']='partial' if item['results'] and item['errors'] else 'success' if item['results'] else 'failed' if item['errors'] else 'missing'
         except Exception as exc:

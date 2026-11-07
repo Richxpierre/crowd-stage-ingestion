@@ -181,9 +181,38 @@ def enrich_pass(kind,pages,source,config,results,enricher):
     from .parse_passes import FIELDS,overrides,extract_pass
     if not enabled():return results,config
     if not (source.get('selectors') or {}).get('single_event'):return results,config
-    # Critical dates require independent deterministic extraction. AI may map their
-    # selectors but cannot manufacture an event identity or upgrade ambiguous dates.
-    if kind=='event_date':return results,config
+    # A previously verified dedicated source may need help locating its date node
+    # after a layout change. Date values are still parsed from explicit page text.
+    if kind=='event_date':
+        if results:return results,config
+        from .automatic import EVENT_WORD,date_range
+        from .parsers import date_part
+        for url,body in list(pages.items())[:1]:
+            soup=BeautifulSoup(body,'html.parser');headings=soup.select('h1')
+            if len(headings)!=1:continue
+            title=headings[0].get_text(' ',strip=True)
+            if not EVENT_WORD.search(title) or re.search(r'upcoming|all conferences|conference calendar|conference directory',title,re.I):continue
+            from .parse_passes import event_nodes
+            if len(list(event_nodes(body)))>1:continue
+            nodes,selectors=field_nodes(body,kind)
+            chosen=enricher.choose(kind,url,title,('start_date','end_date'),nodes)
+            mapping={}
+            for field in ('start_date','end_date'):
+                ids={r['node_id'] for r in chosen if r['field']==field}
+                if len(ids)==1:mapping[field]=selectors[ids.pop()]
+            if set(mapping)!= {'start_date','end_date'}:continue
+            valid=True
+            for field,selector in mapping.items():
+                text=next(n['value'] for n in nodes if selectors[n['id']]==selector)
+                if not re.search(r'\b20\d{2}\b',text) or not (date_range(text) or date_part(text)):valid=False
+            if not valid:continue
+            dated_source={**source,'name':title,'selectors':{**source['selectors'],'title_value':title}}
+            trial=extract_pass(kind,{url:body},dated_source,{'selectors':mapping})
+            extras=[r for r in trial if r['evidence']['method']=='admin_selectors']
+            for row in extras:
+                row['evidence'].update(method='ai_observed_date_nodes',selectors=mapping)
+            if extras:return extras,{**config,'ai_proposal':{'page_url':url,'selectors':mapping,'version':VERSION}}
+        return results,config
     present={k for r in results for k,v in r['fields'].items() if v not in (None,'',[],'unknown')}
     priorities={'event_stats':('format',),'event_location':() if 'region' in present else ('country','city','venue'),
                 'event_details':('event_kind',)}
@@ -196,6 +225,9 @@ def enrich_pass(kind,pages,source,config,results,enricher):
     for url,body in list(pages.items())[:1]:
         from .automatic import parse_page
         dated=parse_page(body,source,url)
+        hint=source.get('_ai_event_identity')
+        if not dated and hint and hint['evidence']['page_url']==url:
+            dated=[{**hint['fields'],'title':hint['title'],'event_url':hint['event_url']}]
         if len(dated)!=1:continue
         nodes,selectors=field_nodes(body,kind)
         selected=enricher.choose(kind,url,dated[0]['title']+' '+dated[0]['start_date'],fields,nodes)

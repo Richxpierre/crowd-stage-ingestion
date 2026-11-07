@@ -51,7 +51,7 @@ class MiniTests(unittest.TestCase):
    self.assertEqual(ai.choose('x',URL,'Cloud',['country'],[{'id':0,'value':'France'}]),[])
  def test_known_facts_and_dates_spend_zero_tokens(self):
   ai=self.worker(lambda p:self.fail('Must not call AI'))
-  for kind,fields in [('event_date',{}),('event_location',{'country':'France','city':'Paris','venue':'Hall'})]:
+  for kind,fields in [('event_date',{'start_date':'2027-06-12'}),('event_location',{'country':'France','city':'Paris','venue':'Hall'})]:
    r=[{'fields':fields}];self.assertEqual(enrich_pass(kind,{URL:BODY},SOURCE,{},r,ai)[0],r)
  def test_catalog_never_borrows_another_events_location(self):
   ai=self.worker(lambda p:self.fail('Must not call AI'));source={**SOURCE,'selectors':{}}
@@ -102,6 +102,19 @@ class MiniTests(unittest.TestCase):
   self.assertEqual(events[0]['region'],'Europe')
   proof=events[0]['extraction']['metadata_enrichment']['evidence']['region']
   self.assertEqual(proof['method'],'ai_observed_nodes');self.assertEqual(proof['page_url'],URL)
+ def test_date_layout_recovery_uses_literal_year_and_keeps_identity(self):
+  body=b'<head><meta name="event-start" content="2027-06-12"></head><main><h1>Cloud Conference 2027</h1></main>'
+  def provider(p):
+   node=next(n for n in p['nodes'] if n['value']=='2027-06-12')
+   return {'selections':[{'field':f,'node_id':node['id']} for f in ('start_date','end_date')]},{}
+  rows,_=enrich_pass('event_date',{URL:body},SOURCE,{},[],self.worker(provider))
+  self.assertEqual(rows[0]['fields']['start_date'],'2027-06-12')
+  self.assertEqual(rows[0]['title'],'Cloud Conference 2027')
+  self.assertEqual(rows[0]['evidence']['method'],'ai_observed_date_nodes')
+ def test_no_date_recovery_from_deadline_or_unverified_catalog(self):
+  for body in (b'<main><h1>Cloud Conference</h1><p>Submission deadline 2027-06-12</p></main>',b'<h1>Upcoming conferences</h1><time>2027-06-12</time>'):
+   rows,_=enrich_pass('event_date',{URL:body},SOURCE,{},[],self.worker(lambda p:self.fail('No eligible event date evidence')))
+   self.assertEqual(rows,[])
 
 if __name__=='__main__':unittest.main()
 
