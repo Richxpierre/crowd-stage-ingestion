@@ -10,7 +10,7 @@ The ingestion worker has a Manus v2 adapter and fallback-readiness reporting. Th
 - Read-only `user.me` authentication, task status/credit usage, and one-page structured-output retrieval for an existing task.
 - Stop support for an explicitly supplied task ID. No task resumption, follow-up messages, automatic confirmation or polling loops.
 - Private/lite task-payload preparation, at most 2,000 prompt bytes, connectors cleared, no source URLs in the prompt, and strict observed-node result validation. This payload is never submitted by the current implementation.
-- A read-only Backend checks `run_manus_probe` input. It authenticates and reports readiness without creating a task or accessing the event database.
+- A read-only Backend checks `run_manus_probe` input. It authenticates and publishes readiness metadata to the admin dashboard without creating a task or changing Sources/events.
 
 ## Budget behavior
 
@@ -26,4 +26,6 @@ The API credential was previously verified by read-only authentication. It is no
 - [Create task: asynchronous agent, lite profile and connector controls](https://open.manus.ai/docs/v2/task.create)
 - [Structured output: post-processing after the agent runs](https://open.manus.ai/docs/v2/structured-output)
 - [Credit consumption and possible negative balances](https://help.manus.im/en/articles/11711097-what-are-the-rules-for-credits-consumption-and-how-can-i-obtain-them)
+
+The admin dashboard is `/admin/enrichment`. Regular worker heartbeats update OpenAI configuration without model calls. The Manus card retains the last explicit read-only authentication check; configuration-only heartbeats do not erase its result. Run Backend checks with `run_manus_probe` to refresh it.
 

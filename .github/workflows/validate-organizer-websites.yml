@@ -38,6 +38,9 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r requirements.txt
+      - name: Report enrichment configuration (no paid API calls)
+        continue-on-error: true
+        run: python -m scripts.report_enrichment_status
       - name: Check validation queue
         id: pending
         env:
