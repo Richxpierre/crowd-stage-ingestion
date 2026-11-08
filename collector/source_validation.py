@@ -43,6 +43,22 @@ def ancillary_event_url(url):
     return bool(re.search(r'/(?:sessions?|speakers?|speaking|talks?|agenda|schedule|team-member)(?:/|$)|/veranstaltung-\d+-|[?&](?:session|speaker|talk)(?:id|_id)?=',url,re.I))
 
 
+def unrelated_page_event(page,records):
+    """A sitewide schema event does not identify an unrelated article as its source."""
+    if urlsplit(page['url']).path in ('','/'):return None
+    headings=BeautifulSoup(page['html'],'html.parser').find_all('h1')
+    if not headings or not records:return None
+    heading_tokens=set(re.findall(r'[^\W\d_]{3,}', ' '.join(h.get_text(' ',strip=True) for h in headings).casefold()))
+    targets=set()
+    for record in records:
+        target=record.get('event_url') or page['url']
+        if clean_url(target).rstrip('/')==clean_url(page['url']).rstrip('/') or not same_owner(target,page['url']):return None
+        title_tokens=set(re.findall(r'[^\W\d_]{3,}',record.get('title','').casefold()))-{'conference','event','the','and','online'}
+        if not title_tokens or heading_tokens & title_tokens:return None
+        targets.add(target)
+    return next(iter(targets)) if len(targets)==1 else None
+
+
 def visible_date_conflicts(body,records):
     """Flag clearly incompatible visible event windows, never guess replacement dates."""
     soup=BeautifulSoup(body,'html.parser')
@@ -162,6 +178,11 @@ async def _validate_site(candidate,reader,search):
             parents=list(dict.fromkeys(r.get('event_url') for r in initial_records if r.get('event_url') and same_owner(r['event_url'],original) and clean_url(r['event_url'])!=clean_url(original) and not ancillary_event_url(r['event_url'])))
             if len(parents)==1:audit['recovery_url']=parents[0]
             outcome['reason']='Ancillary event page (session, speaker or schedule); verify the parent conference URL'
+            return outcome
+        template_parent=unrelated_page_event(first,initial_future)
+        if template_parent:
+            audit['recovery_url']=template_parent
+            outcome['reason']='Page heading does not identify the sitewide structured event; verify its parent conference URL'
             return outcome
         queries=[f'site:{seed_host} conference {date.today().year} {date.today().year+1}',
                  f'site:{seed_host} conference dates venue tickets']
