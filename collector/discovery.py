@@ -75,6 +75,9 @@ def page_links(page):
 
 
 def classify_links(page,seed,settings):
+    if settings.get('discovery_steps') is not None:
+        from .discovery_mapping import mapped_links
+        return mapped_links(page,seed,settings['discovery_steps'])
     internal=[];official=[]
     pattern=re.compile(settings.get('listing_pattern') or r'conference|expo|trade|event|/e/|[?&]page=|/page/',re.I)
     for item in page_links(page):
@@ -99,6 +102,9 @@ def classify_links(page,seed,settings):
 
 
 async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
+    if job['config'].get('setup_only') is True:
+        from .aggregator_setup import run_setup
+        return await run_setup(db,job,reader_factory)
     if job['config'].get('settings',{}).get('adapter') in ('sessionize','conference_monkey'):
         from .bulk_discovery import run_bulk_job
         return await run_bulk_job(db,job)
@@ -177,7 +183,7 @@ async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
                     else:stats['rejected']+=1
                     continue
                 internal,candidates=classify_links(page,seed,settings)
-                if not internal and not candidates:
+                if not internal and not candidates and not settings.get('discovery_steps'):
                     proposed=await asyncio.to_thread(ai_discover,page,seed,ai)
                     internal=[x['url'] for x in proposed if x['task_kind']=='page']
                     candidates=[{'url':x['url'],'label':x['payload'].get('title',''),'ai':True} for x in proposed if x['task_kind']=='source']
@@ -238,7 +244,7 @@ def main():
     try:
         worker_deadline=time.monotonic()+600
         while True:
-            bulk=job['config'].get('settings',{}).get('adapter') in ('sessionize','conference_monkey')
+            bulk=not job['config'].get('setup_only') and job['config'].get('settings',{}).get('adapter') in ('sessionize','conference_monkey')
             if args.drain_bulk and bulk:job['config']['bulk_batch_seconds']=max(1,min(180,worker_deadline-time.monotonic()))
             result=asyncio.run(run_job(db,job));LOG.info('Discovery result: %s',result)
             if not(args.drain_bulk and bulk) or result.get('status')=='cancelled' or job['config'].get('bulk_probe') is True:break
