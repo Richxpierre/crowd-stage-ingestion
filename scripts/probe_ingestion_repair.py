@@ -12,7 +12,9 @@ def main():
     sources=db.sources(slug)
     if not sources:raise RuntimeError('The approved organizer probe source is unavailable')
     source=sources[0]
-    sync_one(db,source,parse_only=True)
+    import os
+    from unittest.mock import patch
+    with patch.dict(os.environ,{'MANUS_BACKUP_ENABLED':'0'}):sync_one(db,source,parse_only=True)
     payload={'stage':'research','url':source['url'],'event':'Open Source Summit Japan',
              'fields':['country','format'],'known':{'start_date':'2026-12-07','end_date':'2026-12-09'},'period':'2026-11'}
     job=enqueue(payload,db);client=ManusClient()

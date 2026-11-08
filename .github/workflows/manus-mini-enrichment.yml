@@ -11,10 +11,12 @@ concurrency:
 jobs:
   enrich:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      AI_ENRICHMENT_ENABLED: '0'
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
       MANUS_BACKUP_ENABLED: ${{ vars.MANUS_BACKUP_ENABLED }}
     steps:
