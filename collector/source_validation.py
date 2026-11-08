@@ -147,7 +147,7 @@ async def _validate_site(candidate,reader,search):
                 if re.search(r'domain (?:is )?for sale|website (?:is )?parked',page.get('html','')[:2000],re.I):raise ValueError('Domain is parked or for sale')
                 if re.search(r'access denied|just a moment|verify you are human',page.get('html','')[:2000],re.I):raise PermissionError('HTTP 403: access challenge')
                 raise ValueError('Empty rendered page')
-            audit['attempts'].append({'url':url,'status':'loaded'})
+            audit['attempts'].append({'url':url,'final_url':page['url'],'status':'loaded'})
             return page
         except Exception as exc:
             audit['attempts'].append({'url':url,'status':'failed','http_status':http_status(exc),'message':str(exc)[:500]})

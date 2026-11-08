@@ -48,6 +48,7 @@ async def main():
                     'reason':result['reason'],'started_at':row['checked_at'],'completed_at':stamp}],
                 manual_review={'status':'proposed','original_title':candidate.get('title'),'snapshot':row['snapshot']})
             report['attempts']=[a for a in report.get('attempts',[]) if a['status']=='loaded']
+            for attempt in report['attempts']:attempt['final_url']=row['final_url']
             flags=[]
             if re.search(r'/(?:sessions?|speakers?|agenda|schedule|talks?)(?:/|$)',urlsplit(row['original_url']).path,re.I):flags.append('ancillary_page')
             if any(not same_owner(e.get('url') or '',row['original_url']) for e in report.get('event_evidence',[])):flags.append('event_url_outside_owner')
