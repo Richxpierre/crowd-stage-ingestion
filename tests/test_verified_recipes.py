@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 import json,hashlib
 from collector.parse_passes import extract_pass,assemble,collect_passes,PASS_TYPES
 
@@ -93,5 +94,19 @@ class VerifiedRecipeTests(unittest.TestCase):
         self.assertEqual((rows[0]['fields']['start_date'],rows[0]['fields']['end_date']),('2027-06-09','2027-06-11'))
         with self.assertRaisesRegex(ValueError,'evidence changed'):
             extract_pass('event_date',{URL:body.replace(b'2027 in Perth',b'2028 in Perth')},SOURCE,{'verified_events':[rule],'require_verified':True})
+
+    def test_reviewed_unknown_stats_do_not_become_free_from_workshop_copy(self):
+        rows=extract_pass('event_stats',{URL:BODY+b'<p>Free workshops. 4000 expected attendees.</p>'},SOURCE,{'reviewed_only':True,'verified_events':[]})
+        self.assertEqual(rows,[])
+
+    def test_reviewed_passes_do_not_queue_or_call_optional_ai(self):
+        source={**SOURCE,'selectors':{'single_event':True,'render':False,'max_pages':1,'parse_passes':{}}}
+        for kind in PASS_TYPES:source['selectors']['parse_passes'][kind]={'page_urls':[URL],'reviewed_only':True,'verified_events':[recipe(kind)],'require_verified':kind=='event_date'}
+        class Fetcher:
+            def fetch(self,url):return 200,BODY,{}
+        with patch('collector.manus_research.research_job') as research,patch('collector.mini_enrichment.enrich_pass') as ai:
+            report,_=collect_passes(Fetcher(),source)
+            research.assert_not_called();ai.assert_not_called()
+        self.assertEqual(assemble(report,source)[0]['start_date'],'2027-05-17')
 
 if __name__=='__main__':unittest.main()
