@@ -82,5 +82,10 @@ class AccessTests(unittest.TestCase):
   db=DB();db.cancelled=True;recovery=self.recovery(db)
   with self.assertRaises(AccessBlocked):asyncio.run(recovery.recover(Reader(),SEED,'anti_bot'))
   self.assertEqual(Search.calls,0)
+ def test_exhausted_recovery_cannot_cascade_through_bulk_continuations(self):
+  cfg=copy.deepcopy(JOB['config']);cfg['access_recovery']={'status':'needs_review','blocked_url':SEED,'reason':'Three probes exhausted'}
+  recovery=self.recovery(config=cfg);reader=Reader()
+  with self.assertRaises(AccessBlocked):asyncio.run(recovery.read(reader,SEED))
+  self.assertFalse(reader.reads);self.assertEqual(Search.calls,0);self.assertTrue(recovery.stopped)
 
 if __name__=='__main__':unittest.main()

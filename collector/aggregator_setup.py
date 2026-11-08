@@ -49,6 +49,7 @@ async def run_setup(db,job,reader_factory=Crawl4AIReader):
                     if recovery.waiting:
                         state['queue'].insert(0,url)
                         return finish('needs_review','Access blocked; mini enrichment is finding a public alternate route')
+                    if recovery.stopped:return finish('needs_review',recovery.report.get('reason','Access recovery needs review'))
                     state['visited'].append(url);continue
                 if not same_owner(page['url'],seed):
                     state['visited'].append(url);state['errors'].append({'url':url,'message':'Cross-domain redirect needs review'});continue

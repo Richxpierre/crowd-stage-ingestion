@@ -32,7 +32,7 @@ class AccessRecovery:
     def __init__(self,db,job,config,deadline,search_factory=SearXNG):
         self.db=db;self.job=job;self.config=config;self.deadline=deadline;self.search_factory=search_factory
         self.report=config.setdefault('access_recovery',{})
-        self.used=False
+        self.used=self.report.get('status') in ('needs_review','cooldown','disabled')
 
     def live(self):
         row=self.db.crawl_job(self.job['id'])
@@ -40,6 +40,9 @@ class AccessRecovery:
 
     @property
     def waiting(self):return self.report.get('status')=='awaiting_enrichment'
+
+    @property
+    def stopped(self):return self.report.get('status') in ('awaiting_enrichment','needs_review','cooldown','disabled')
 
     async def read(self,reader,url):
         if self.used and self.report.get('blocked_url')==url:raise AccessBlocked(self.report.get('reason','Access recovery already attempted'))

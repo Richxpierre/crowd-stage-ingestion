@@ -210,7 +210,7 @@ async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
                         if not heartbeat():cancelled=True;break
             except Exception as exc:
                 errors.append({'url':url,'message':str(exc)[:500]})
-                if recovery.waiting:break
+                if recovery.stopped:break
                 if not fallback_seeds_added:
                     queue.extend((target,0) for target in settings.get('fallback_seeds',[]) if same_owner(target,seed) and target not in visited)
                     fallback_seeds_added=True
@@ -224,7 +224,7 @@ async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
     db.update_crawl_job(job['id'],{**stats,'config':config,'errors':errors[-50:],'status':status,'summary':message,
         'visited_urls':successful,'completed_at':datetime.now(timezone.utc).isoformat()})
     recovery.resume_if_ready()
-    return {**stats,'status':status,'awaiting_enrichment':recovery.waiting}
+    return {**stats,'status':status,'awaiting_enrichment':recovery.waiting,'access_recovery_stopped':recovery.stopped}
 
 
 def main():
@@ -251,7 +251,7 @@ def main():
             bulk=not job['config'].get('setup_only') and job['config'].get('settings',{}).get('adapter') in ('sessionize','conference_monkey')
             if args.drain_bulk and bulk:job['config']['bulk_batch_seconds']=max(1,min(180,worker_deadline-time.monotonic()))
             result=asyncio.run(run_job(db,job));LOG.info('Discovery result: %s',result)
-            if not(args.drain_bulk and bulk) or result.get('status')=='cancelled' or result.get('awaiting_enrichment') or job['config'].get('bulk_probe') is True:break
+            if not(args.drain_bulk and bulk) or result.get('status')=='cancelled' or result.get('access_recovery_stopped') or result.get('awaiting_enrichment') or job['config'].get('bulk_probe') is True:break
             next_id=db.continue_bulk_crawl(job['id'])
             if not next_id:break
             if time.monotonic()>=worker_deadline:

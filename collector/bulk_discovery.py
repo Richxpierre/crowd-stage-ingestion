@@ -157,7 +157,7 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
             except Exception as exc:
                 errors.append({'url':item['url'],'message':str(exc)[:400]})
                 db.fail_frontier(job['id'],item,str(exc)[:400])
-                if recovery.waiting:break
+                if recovery.stopped:break
         progress=db.frontier_progress(job['id'])
         config['progress_stage']='Batch finished; continuation saved'
         progress.update(getattr(reader,'stats',{}));config['bulk_progress']=progress
@@ -172,4 +172,4 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
     db.update_crawl_job(job['id'],{**stats,'config':config,'status':status,'errors':errors[-50:],'summary':message,
         'completed_at':datetime.now(timezone.utc).isoformat()})
     recovery.resume_if_ready()
-    return {**stats,'status':status,'bulk_progress':progress,'awaiting_enrichment':recovery.waiting}
+    return {**stats,'status':status,'bulk_progress':progress,'awaiting_enrichment':recovery.waiting,'access_recovery_stopped':recovery.stopped}
