@@ -229,7 +229,7 @@ def enrich_pass(kind,pages,source,config,results,enricher):
         return results,config
     present={k for r in results for k,v in r['fields'].items() if v not in (None,'',[],'unknown')}
     priorities={'event_stats':('format',),'event_location':() if 'region' in present else ('country','city','venue'),
-                'event_details':('event_kind',)}
+                'event_details':('event_kind','categories')}
     if (source.get('selectors') or {}).get('ai_optional_fields') is True:
         priorities={'event_stats':('format','price_from','price_currency','attendees','exhibitors'),
                     'event_location':('country','city','venue'),'event_details':('event_kind','summary','categories')}

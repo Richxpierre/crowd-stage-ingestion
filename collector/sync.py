@@ -122,11 +122,14 @@ def sync_one(db, source, selected_passes=None, parse_only=False):
         if source['kind'] != 'auto' and not recovered:
             fetcher.deadline=min(getattr(fetcher,'deadline',None) or float('inf'),time.monotonic()+60)
             records=enrich_missing_images(fetcher,source,records)
-        if os.environ.get('METADATA_ENRICHMENT')=='1' and any(not r.get('region') or r.get('format') in (None,'unknown','') for r in records):
+        from .industry import classify
+        try:classify(db,records)
+        except Exception as exc:report['industry_enrichment']={'status':'preview_unavailable','message':str(exc)[:300]}
+        if os.environ.get('METADATA_ENRICHMENT')=='1' and any(not r.get('region') or r.get('format') in (None,'unknown','') or r.get('_industry_resolved') is False for r in records):
             import asyncio
             from .metadata_worker import enrich_with_browser
             try:
-                records,metadata_report=asyncio.run(enrich_with_browser(records,source,time.monotonic()+90))
+                records,metadata_report=asyncio.run(enrich_with_browser(records,source,time.monotonic()+90,db=db))
                 report['metadata_enrichment']=metadata_report
             except Exception as exc:
                 # Optional enrichment must never discard otherwise valid dates.
@@ -136,6 +139,9 @@ def sync_one(db, source, selected_passes=None, parse_only=False):
         if recovered or (source.get('discovery_report') or {}).get('mode')=='website_fallback':
             records=reconcile_identities(db,source,records)
         records = preserve_existing_identity(db, source, records)
+        for record in records:
+            record.pop('_industry_resolved',None)
+            _finish(record,source['publisher'],record['source_record_id'])
         counts['fetched_count'] = len(records)
         image_report=report
         image_report.update(image_extraction_version=1,images_found=sum(bool(r.get('cover_url')) for r in records))

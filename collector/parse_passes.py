@@ -23,7 +23,7 @@ FIELDS = {
     'event_date': ('start_date','end_date','timezone','status'),
     'event_stats': ('price_from','price_currency','attendees','exhibitors','format'),
     'event_location': ('venue','city','region','country'),
-    'event_details': ('event_kind','summary','categories','cover_url','image_method','image_source_url','registration_url','cfp_url','cfp_deadline'),
+    'event_details': ('industry_text','industry_research','event_kind','summary','categories','cover_url','image_method','image_source_url','registration_url','cfp_url','cfp_deadline'),
 }
 
 def now(): return datetime.now(timezone.utc).isoformat()
@@ -198,6 +198,10 @@ def extract_pass(kind, pages, source, config, on_page=None, snapshot_cache=None)
             if 'records' not in cached:cached['records']=parse_page(body,source,url)
             return copy.deepcopy(cached['records'])
         def add(title,start,fields,method,event_url=None,metadata=None):
+            if kind=='event_details' and not config.get('reviewed_only'):
+                from .industry import extract
+                text=extract(body,title,bool((source.get('selectors') or {}).get('single_event')))
+                if text:fields.setdefault('industry_text',text)
             fields=nonempty(fields)
             original=event_url or url;canonical=canonical_page(original)
             if 'source_record_id' in fields and fields['source_record_id'].startswith(original+'|'):

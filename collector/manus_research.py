@@ -10,7 +10,7 @@ from .crawler_reader import same_owner, Crawl4AIReader
 from .parsers import clean_url
 from .validation_recovery import scope_url
 
-FIELDS=('start_date','end_date','country','city','venue','format','event_kind')
+FIELDS=('start_date','end_date','country','city','venue','format','event_kind','categories')
 SCHEMA={'type':'object','properties':{'evidence':{'type':'array','items':{
     'type':'object','properties':{k:{'type':'string'} for k in ('field','value','quote','page_url','event_title')},
     'required':['field','value','quote','page_url','event_title'],'additionalProperties':False}}},
@@ -30,7 +30,7 @@ def prepare(payload):
       'footer addresses and deadlines. Return up to seven evidence entries. Each needs the exact '
       'event heading, an exact short visible quote, its organizer page URL and a value explicitly '
       'contained in that quote. Dates use the visible date wording, not invented ISO values. '
-      'For format/type return the exact descriptive wording. Omit unsupported fields. '
+      'For format/type return the exact descriptive wording. For categories return a short industry/topic phrase explicitly stated in the event description, not a sponsor name. Omit unsupported fields. '
       'Finish with the requested structured evidence; no further investigation.\n')
     import json
     prompt+=json.dumps({'url':url,'event':str(payload.get('event',''))[:180],'fields':fields,
@@ -94,20 +94,33 @@ def research_job(source,pages,results=None,db=None,enqueue_missing=True):
     from .manus_queue import enqueue
     db=db or Client()
     rows=db.request('GET','conference_manus_jobs',params={'payload->>stage':'eq.research',
-        'payload->>url':'eq.'+source['url'],'payload->>period':'eq.'+date.today().strftime('%Y-%m'),'status':'eq.completed','select':'id,payload,result',
+        'payload->>research_version':'eq.2','payload->>url':'eq.'+source['url'],'payload->>period':'eq.'+date.today().strftime('%Y-%m'),'status':'in.(queued,running,completed,failed,unknown)','select':'id,status,payload,result',
         'order':'completed_at.desc','limit':'1'})
-    if rows:return {**rows[0],'status':'completed'}
+    if rows:return rows[0]
     if not enqueue_missing:return None
     present={f for item in (results or {}).values() for r in item.get('results',[]) for f,v in r['fields'].items() if v not in (None,'',[],'unknown')}
     missing=[f for f in ('start_date','end_date','country','format','event_kind') if f not in present]
-    if not missing:return None
     title=source.get('name','');known={}
     dated=(results or {}).get('event_date',{}).get('results',[])
-    if len(dated)==1:title=dated[0]['title'];known={k:dated[0]['fields'][k] for k in ('start_date','end_date') if k in dated[0]['fields']}
+    if len(dated)==1:title=dated[0].get('title') or title;known={k:dated[0]['fields'][k] for k in ('start_date','end_date') if k in dated[0]['fields']}
     elif pages:
         h=BeautifulSoup(next(iter(pages.values())),'html.parser').select('h1')
         if len(h)==1:title=h[0].get_text(' ',strip=True)
-    return enqueue({'stage':'research','url':source['url'],'event':title[:180],
+    # A known industry avoids paid research even when the page has no keyword tags.
+    if results and len(dated)==1:
+        from .industry import classify
+        details=(results or {}).get('event_details',{}).get('results',[])
+        candidate={'title':title,'summary':' '.join(str(r['fields'].get('summary','')) for r in details),
+                   'industry_text':' '.join(str(r['fields'].get('industry_text','')) for r in details),
+                   'categories':[v for r in details for v in (r['fields'].get('categories') or [])]}
+        try:
+            if not classify(db,[candidate])[0].get('_industry_resolved'):missing.append('categories')
+        except Exception:
+            # A failed preview must not trigger an unbounded paid fallback.
+            pass
+    if not dated:missing.append('categories')
+    if not missing:return None
+    return enqueue({'stage':'research','research_version':2,'url':source['url'],'event':title[:180],
         'fields':sorted(set(missing+(['city','venue'] if 'country' in missing else []))),'known':known,'period':date.today().strftime('%Y-%m')},db)
 
 def add_results(kind,pages,source,results,job):
@@ -143,6 +156,9 @@ def add_results(kind,pages,source,results,job):
             meta=infer(('<main><h1>'+value+'</h1><p>'+value+'</p></main>').encode(),row['page_url'],value,single_event=True)
             if field not in meta['fields']:continue
             fields[field]=meta['fields'][field]
+        elif field=='categories':
+            if len(value)>60:continue
+            fields['industry_research']=value
         else:fields[field]=value
         metadata={'version':1,'fields':dict(fields),'suggestions':{},'warnings':[],
                   'evidence':{k:{'value':v,'method':'manus_crawl4ai_verified','confidence':'medium',
