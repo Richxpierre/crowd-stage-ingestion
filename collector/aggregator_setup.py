@@ -58,6 +58,7 @@ async def run_setup(db,job,reader_factory=Crawl4AIReader):
                 else:
                     # Explicit website buttons / recognized listing anchors need no paid inference.
                     selections=[(n['hint'],n) for n in nodes if n['hint']]
+                    if any(f=='website' for f,n in selections):selections=[(f,n) for f,n in selections if f!='follow']
                     detail_page='/conference/' in urlsplit(url).path or '/speakers/' in urlsplit(url).path
                     weak_follows=all(n.get('_priority',6)>=4 for f,n in selections if f=='follow')
                     if not any(f=='website' for f,n in selections) and (detail_page or weak_follows or len({n['selector'] for f,n in selections if f=='follow'})>3):

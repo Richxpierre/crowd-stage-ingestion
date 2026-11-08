@@ -30,6 +30,9 @@ def observed_nodes(page,seed):
         scope=next((p for p in a.parents if p.get('id') and re.search(r'(?:^|[-_])(?:main|content|events?|directory|listing|results)(?:$|[-_])',p['id'],re.I) and not re.search(r'\d{3,}',p['id'])),None)
         if scope and re.fullmatch(r'[A-Za-z_][\w-]{0,60}',scope.get('id','')):selector='#'+scope['id']+' '+selector
         hint='website' if not same_owner(url,seed) and re.search(r'website|homepage|official|visit.*conference',label,re.I) else 'pagination' if re.fullmatch(r'next(?: page)?|[›»→]',label,re.I) or 'next' in a.get('rel',[]) else 'follow' if same_owner(url,seed) and re.search(r'conference|event|summit|expo|directory|speaker|/e/',urlsplit(url).path+' '+label,re.I) else ''
+        website_parent=next((c for c in parent_classes if re.search(r'website|webpage|official|organizer',c,re.I)),None)
+        if hint=='website' and website_parent:
+            selector=(('#'+scope['id']+' ') if scope else '')+'.'+website_parent+' a[href]'
         parent_class=' '.join(a.parent.get('class',[])) if a.parent else ''
         if not hint and same_owner(url,seed) and re.search(r'directory.*title|post-link|event.*title',parent_class+' '+' '.join(classes),re.I):hint='follow'
         navigation=bool(a.find_parent(['nav','header','footer']) or re.search(r'nav|footer|sidebar|reminder',str(scope.get('id','')) if scope else '',re.I))
