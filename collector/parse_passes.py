@@ -247,9 +247,9 @@ def extract_pass(kind, pages, source, config, on_page=None):
             image=choose_image(body,url,selectors=source.get('selectors'))
             add(source['name'],None,image,'page_image',source['url'])
         verified=verified_event_values(kind,body,config,url)
-        if kind=='event_date' and config.get('require_verified') and verified and (source.get('selectors') or {}).get('single_event'):
-            # Dedicated pages can embed their parent conference in shared JSON-LD.
-            # An explicitly reviewed child edition must not also import that parent.
+        if kind=='event_date' and config.get('require_verified') and verified:
+            # Reviewed-only pages can contain parent conferences, sessions or training.
+            # Import only the editions explicitly approved on this page.
             results[:]=[row for row in results if row['evidence']['page_url']!=url]
         for recipe,title,start,fields in verified:
             event_url=canonical_page(recipe.get('event_url') or source['url'])

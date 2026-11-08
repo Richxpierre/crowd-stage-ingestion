@@ -77,4 +77,10 @@ class VerifiedRecipeTests(unittest.TestCase):
         rows=extract_pass('event_date',{URL:body},SOURCE,{'verified_events':[recipe('event_date')],'require_verified':True})
         self.assertEqual([r['title'] for r in rows],['Cloud 2027'])
 
+    def test_reviewed_only_catalog_excludes_unreviewed_training(self):
+        source={**SOURCE,'selectors':{'single_event':False}}
+        body=BODY+b'<script type="application/ld+json">{"@type":"Event","name":"Other Training","url":"https://example.org/training/","startDate":"2027-06-01"}</script>'
+        rows=extract_pass('event_date',{URL:body},source,{'verified_events':[recipe('event_date')],'require_verified':True})
+        self.assertEqual([r['title'] for r in rows],['Cloud 2027'])
+
 if __name__=='__main__':unittest.main()
