@@ -52,6 +52,12 @@ class ResearchTests(unittest.TestCase):
   self.assertEqual((event['start_date'],event['end_date']),('2027-06-12','2027-06-13'))
   self.assertEqual((event['country'],event['region'],event['format']),('France','Europe','hybrid'))
   self.assertEqual(report['event_location']['results'][0]['evidence']['method'],'manus_crawl4ai_verified')
+ def test_onsite_is_normalized_but_online_registration_is_not_attendance(self):
+  for value,quote,expected in [('Onsite','The Onsite Experience','in_person'),('Online','Online registration',None)]:
+   body=BODY.replace('Hybrid conference',quote).encode()
+   job={'id':'job','payload':PAYLOAD,'result':{'evidence':[row('format',value,quote)]}}
+   result=add_results('event_stats',{URL:body},SOURCE,[],job)
+   self.assertEqual(result[0]['fields']['format'] if result else None,expected)
  def test_changed_page_discards_stale_research(self):
   job={'id':'job','payload':PAYLOAD,'result':EVIDENCE}
   self.assertEqual(add_results('event_location',{URL:BODY.replace('France','Canada').encode()},SOURCE,[],job),[])

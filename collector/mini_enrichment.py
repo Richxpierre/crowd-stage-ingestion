@@ -160,7 +160,7 @@ def field_nodes(body, kind):
     nodes=[];selectors={};contexts={}
     patterns={
         'event_date':r'20\d\d|datetime',
-        'event_stats':r'price|ticket|USD|EUR|GBP|\$|â‚¬|attendee|exhibitor|participant|online|virtual|hybrid|in.person',
+        'event_stats':r'price|ticket|USD|EUR|GBP|\$|€|attendee|exhibitor|participant|online|virtual|hybrid|in.person',
         'event_location':r'venue|location|address|city|country|held|takes place',
         'event_details':r'conference|congress|summit|expo|trade.show|description|keyword|topic',
     }

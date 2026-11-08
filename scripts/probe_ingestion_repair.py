@@ -27,6 +27,15 @@ def main():
         report={'job_id':job['id'],'status':job['status'],'reason':job.get('reason'),
                 'verified_fields':sorted({r['field'] for r in (job.get('result') or {}).get('evidence',[])}),
                 'verified_evidence':(job.get('result') or {}).get('evidence',[])}
+        if job['status']=='completed':
+            from collector.fetch import Fetcher
+            from collector.manus_research import add_results
+            from collector.parse_passes import PASS_TYPES
+            _,body,_=Fetcher(os.environ['COLLECTOR_USER_AGENT']).fetch(source['url'])
+            normalized={k:v for kind in PASS_TYPES for r in add_results(kind,{source['url']:body},source,[],job) for k,v in r['fields'].items()}
+            report['parser_fields']=normalized
+            if normalized.get('country')!='Japan' or normalized.get('format')!='in_person':
+                raise RuntimeError('Verified citations did not reach parser field normalization')
         Path('ingestion-repair-probe.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
         print('REPAIR_PROBE='+json.dumps(report))
         if job['status']=='failed':raise RuntimeError('Manus research probe failed: '+str(job.get('reason')))

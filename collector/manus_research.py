@@ -135,6 +135,10 @@ def add_results(kind,pages,source,results,job):
             code=country_code(value)
             if not code:continue
             fields={'country':COUNTRIES[code][0],'region':region_for(value)}
+        elif field=='format' and normalized(value) in {'onsite','on-site','in person','in-person','hybrid','virtual','online'}:
+            if re.search(r'\bnot\b|no longer|registration|submission|deadline|ticket',row['quote'],re.I):continue
+            fields[field]={'onsite':'in_person','on-site':'in_person','in person':'in_person','in-person':'in_person',
+                           'hybrid':'hybrid','virtual':'online','online':'online'}[normalized(value)]
         elif field in ('format','event_kind'):
             meta=infer(('<main><h1>'+value+'</h1><p>'+value+'</p></main>').encode(),row['page_url'],value,single_event=True)
             if field not in meta['fields']:continue
