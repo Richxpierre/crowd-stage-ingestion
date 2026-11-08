@@ -68,7 +68,7 @@ class ResearchTests(unittest.TestCase):
   self.assertEqual(add_results('event_location',{URL:BODY.encode()},SOURCE,existing,job),existing)
  def test_complete_source_needs_no_paid_research(self):
   with patch.dict(os.environ,{'MANUS_API_KEY':'test','MANUS_BACKUP_ENABLED':'1'}),patch('collector.manus_queue.enqueue') as enqueue:
-   db=Mock();db.request.return_value=[]
+   db=Mock();db.request.side_effect=[[],[{'status':'matched','slug':'software-cloud'}]]
    results={'event_date':{'results':[{'fields':{f:'known' for f in ('start_date','end_date','country','format','event_kind')}}]}}
    self.assertIsNone(research_job(SOURCE,{},results,db));enqueue.assert_not_called()
 

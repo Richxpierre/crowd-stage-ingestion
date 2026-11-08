@@ -77,4 +77,7 @@ def infer(body,url,title,known=None,node=None,single_event=False):
  kinds=[(r'\btrade[ -]?(?:show|fair)\b','trade-show'),(r'\bexpo(?:sition)?\b|\bexhibition\b','expo'),(r'\bsummit\b','summit'),(r'\bconference\b|\bcongress\b|\bjahrestagung\b','conference')]
  for pattern,value in kinds:
   if re.search(pattern,title,re.I):put('event_kind',value,'event_title',title);break
+ from .industry import extract
+ topic_text=extract(body,title,single_event)
+ if topic_text:put('industry_text',topic_text,'event_page_text',topic_text)
  return {'fields':fields,'evidence':proof,'suggestions':suggestions,'warnings':warnings,'version':1}
