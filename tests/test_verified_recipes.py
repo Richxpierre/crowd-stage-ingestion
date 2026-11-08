@@ -1,5 +1,6 @@
 import unittest
-from collector.parse_passes import extract_pass,assemble,PASS_TYPES
+import json,hashlib
+from collector.parse_passes import extract_pass,assemble,collect_passes,PASS_TYPES
 
 URL='https://example.org/conference/'
 SOURCE={'url':URL,'name':'Cloud 2027','publisher':'Organizer','selectors':{'single_event':True}}
@@ -45,5 +46,30 @@ class VerifiedRecipeTests(unittest.TestCase):
         rows=extract_pass('event_date',{URL:body},SOURCE,{})
         self.assertEqual(rows[0]['fields']['start_date'],'2027-05-17')
         self.assertEqual(rows[0]['evidence']['method'],'date_parser')
+
+    def test_bare_domain_settings_use_the_already_fetched_root(self):
+        root='https://example.org'
+        source={**SOURCE,'url':root,'selectors':{'single_event':True,'render':False,'max_pages':1,'parse_passes':{}}}
+        for kind in PASS_TYPES:
+            rule={**recipe(kind),'page_url':root,'event_url':root}
+            source['selectors']['parse_passes'][kind]={'page_urls':[root],'verified_events':[rule],'require_verified':True}
+        class Fetcher:
+            def fetch(self,url):return 200,BODY,{}
+        report,_=collect_passes(Fetcher(),source)
+        self.assertEqual(report['event_date']['status'],'success')
+        self.assertEqual(assemble(report,source)[0]['start_date'],'2027-05-17')
+
+    def test_structured_event_guard_is_exact_and_not_arbitrary_script_text(self):
+        node={'@type':'Event','name':'Cloud 2027','url':URL,'startDate':'2027-05-17','endDate':'2027-05-20'}
+        rule={**recipe('event_date'),'require_text':[], 'require_event':{
+            'name':node['name'],'start_date':'2027-05-17','end_date':'2027-05-20',
+            'sha256':hashlib.sha256(json.dumps(node,sort_keys=True,separators=(',',':')).encode()).hexdigest()}}
+        body=('<script type="application/ld+json">'+json.dumps(node)+'</script>').encode()
+        rows=extract_pass('event_date',{URL:body},SOURCE,{'verified_events':[rule],'require_verified':True})
+        self.assertEqual(rows[0]['fields']['end_date'],'2027-05-20')
+        changed={**node,'endDate':'2027-05-21'}
+        body=('<script type="application/ld+json">'+json.dumps(changed)+'</script>').encode()
+        with self.assertRaisesRegex(ValueError,'evidence changed'):
+            extract_pass('event_date',{URL:body},SOURCE,{'verified_events':[rule],'require_verified':True})
 
 if __name__=='__main__':unittest.main()
