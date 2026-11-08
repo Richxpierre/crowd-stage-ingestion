@@ -30,7 +30,7 @@ def identity(title): return re.sub(r'\W+', ' ', title or '').strip().casefold()
 def canonical_page(url):
     p=urlsplit(url)
     path=re.sub(r'/(?:index|default)\.(?:html?|php|aspx?)$', '/', p.path,flags=re.I)
-    return urlunsplit((p.scheme,p.netloc,path,p.query,''))
+    return urlunsplit((p.scheme,p.netloc,path or '/',p.query,''))
 
 def event_nodes(body):
     soup = BeautifulSoup(body, 'html.parser')
@@ -120,6 +120,10 @@ def verified_event_values(kind, body, config, url):
         value=unicodedata.normalize('NFKC',str(value)).casefold()
         return re.sub(r'[^\w]+',' ',value).strip()
     soup=BeautifulSoup(body,'html.parser')
+    structured=[]
+    for script in soup.find_all('script',type=re.compile(r'^application/ld\+json',re.I)):
+        try:structured.extend(n for n in _ld_nodes(json.loads(script.string or script.get_text())) if _is_event(n))
+        except (ValueError,TypeError):continue
     for noisy in soup.select('script,style,noscript'):noisy.decompose()
     visible=norm(soup.get_text(' ',strip=True))
     matched=[]
@@ -128,14 +132,28 @@ def verified_event_values(kind, body, config, url):
         if canonical_page(str(recipe.get('page_url','')))!=canonical_page(url):continue
         proofs=recipe.get('require_text') or []
         edition=str(recipe.get('edition',''))
-        if not re.fullmatch(r'\d{4}',edition) or not isinstance(proofs,list) or not 2<=len(proofs)<=12:
+        event_guard=recipe.get('require_event')
+        schema_match=False
+        if event_guard:
+            if not isinstance(event_guard,dict) or not re.fullmatch(r'[0-9a-f]{64}',str(event_guard.get('sha256',''))):
+                raise ValueError('Reviewed structured event needs a SHA-256 evidence fingerprint')
+            schema_match=any(
+                str(node.get('name',''))==event_guard.get('name') and
+                date_part(node.get('startDate'))==event_guard.get('start_date') and
+                date_part(node.get('endDate') or node.get('startDate'))==event_guard.get('end_date') and
+                hashlib.sha256(json.dumps(node,sort_keys=True,separators=(',',':')).encode()).hexdigest()==event_guard['sha256']
+                for node in structured)
+        if not re.fullmatch(r'\d{4}',edition) or not isinstance(proofs,list) or not (0 if event_guard else 2)<=len(proofs)<=12:
             raise ValueError('Reviewed event needs an edition and 2-12 visible evidence excerpts')
         if not all(isinstance(p,str) and 3<=len(p)<=600 for p in proofs):
             raise ValueError('Invalid reviewed event evidence excerpt')
-        if not any(edition in p for p in proofs) or not all(norm(p) in visible for p in proofs):continue
+        if event_guard and not schema_match:continue
+        if not event_guard and not any(edition in p for p in proofs):continue
+        if not all(norm(p) in visible for p in proofs):continue
         title=plain(recipe.get('title'),240)
         start=date_part(recipe.get('start_date'))
         if not title or not start or start[:4]!=edition:raise ValueError('Reviewed event identity does not match its edition')
+        if event_guard and event_guard.get('start_date')!=start:raise ValueError('Reviewed structured evidence does not match event dates')
         fields={k:v for k,v in (recipe.get('fields') or {}).items() if k in FIELDS[kind]}
         for key,value in list(fields.items()):
             if key.endswith('_url'):
@@ -147,6 +165,7 @@ def verified_event_values(kind, body, config, url):
         if fields.get('format') not in (None,'in_person','online','hybrid'):raise ValueError('Invalid reviewed format')
         if kind=='event_date':
             if fields.get('start_date')!=start:raise ValueError('Reviewed dates do not match event identity')
+            if event_guard and fields.get('end_date',start)!=event_guard.get('end_date'):raise ValueError('Reviewed structured evidence does not match event dates')
             fields['source_record_id']=recipe.get('source_record_id') or canonical_page(recipe.get('event_url') or url)+'|'+edition
         fields=nonempty(fields)
         if fields:matched.append((recipe,title,start,fields))
@@ -227,7 +246,12 @@ def extract_pass(kind, pages, source, config, on_page=None):
         if kind=='event_details' and (source.get('selectors') or {}).get('single_event'):
             image=choose_image(body,url,selectors=source.get('selectors'))
             add(source['name'],None,image,'page_image',source['url'])
-        for recipe,title,start,fields in verified_event_values(kind,body,config,url):
+        verified=verified_event_values(kind,body,config,url)
+        if kind=='event_date' and config.get('require_verified') and verified and (source.get('selectors') or {}).get('single_event'):
+            # Dedicated pages can embed their parent conference in shared JSON-LD.
+            # An explicitly reviewed child edition must not also import that parent.
+            results[:]=[row for row in results if row['evidence']['page_url']!=url]
+        for recipe,title,start,fields in verified:
             event_url=canonical_page(recipe.get('event_url') or source['url'])
             if kind=='event_date':
                 results[:]=[row for row in results if not (
@@ -311,7 +335,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
         try:
             if cfg.get('enabled',True) is False:item['status']='disabled'
             else:
-                targets=cfg.get('page_urls') or list(dict.fromkeys([*pages,*errors]))
+                targets=list(dict.fromkeys(clean_url(u) for u in cfg.get('page_urls',[]) if clean_url(u))) or list(dict.fromkeys([*pages,*errors]))
                 chosen={u:pages[u] for u in targets if u in pages}
                 item['pages_total']=len(chosen)
                 item['errors']=[{'page_url':u,'message':errors.get(u,'Page was not fetched within the page budget')} for u in targets if u not in pages]
