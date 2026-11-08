@@ -72,4 +72,9 @@ class VerifiedRecipeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'evidence changed'):
             extract_pass('event_date',{URL:body},SOURCE,{'verified_events':[rule],'require_verified':True})
 
+    def test_reviewed_dedicated_child_does_not_import_embedded_parent_event(self):
+        body=BODY+b'<script type="application/ld+json">{"@type":"Event","name":"Parent Conference","url":"https://example.org/parent/","startDate":"2027-05-17","endDate":"2027-05-21"}</script>'
+        rows=extract_pass('event_date',{URL:body},SOURCE,{'verified_events':[recipe('event_date')],'require_verified':True})
+        self.assertEqual([r['title'] for r in rows],['Cloud 2027'])
+
 if __name__=='__main__':unittest.main()
