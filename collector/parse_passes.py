@@ -257,7 +257,7 @@ def extract_pass(kind, pages, source, config, on_page=None):
             image=choose_image(body,url,selectors=source.get('selectors'))
             add(source['name'],None,image,'page_image',source['url'])
         verified=verified_event_values(kind,body,config,url)
-        if kind=='event_date' and config.get('require_verified') and verified:
+        if config.get('reviewed_only') or kind=='event_date' and config.get('require_verified') and verified:
             # Reviewed-only pages can contain parent conferences, sessions or training.
             # Import only the editions explicitly approved on this page.
             results[:]=[row for row in results if row['evidence']['page_url']!=url]
@@ -278,6 +278,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
     selected=tuple(selected or PASS_TYPES)
     if any(p not in PASS_TYPES for p in selected): raise ValueError('Unknown parse pass')
     options=(source.get('selectors') or {}).get('parse_passes') or {}
+    reviewed_only=all((options.get(kind) or {}).get('reviewed_only') or (options.get(kind) or {}).get('enabled',True) is False for kind in selected)
     pages={}; errors={}; report={}; started=now();rendered_count=0;stop_fetching=False
     root=clean_url(source['url'])
     if not root: raise ValueError('Source must be HTTPS')
@@ -317,7 +318,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
         publish_collection()
     from .manus_research import research_job,add_results as add_research
     research=None
-    try:research=research_job(source,{},enqueue_missing=False)
+    try:research=None if reviewed_only else research_job(source,{},enqueue_missing=False)
     except Exception:pass  # Optional provider queue cannot break deterministic extraction.
     load(root)
     # Shared crawl snapshot, fetched once. Do not stop after finding dates:
@@ -353,8 +354,9 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
                     item.update(pages_done=item['pages_done']+1,heartbeat_at=now())
                     if on_result:on_result(kind,dict(item))
                 item['results']=extract_pass(kind,chosen,source,cfg,on_page=page_done)
-                item['results']=add_research(kind,pages,source,item['results'],research)
-                item['results'],_=enrich_pass(kind,chosen,source,cfg,item['results'],ai)
+                if not cfg.get('reviewed_only'):
+                    item['results']=add_research(kind,pages,source,item['results'],research)
+                    item['results'],_=enrich_pass(kind,chosen,source,cfg,item['results'],ai)
                 if kind=='event_date' and len(item['results'])==1:
                     source={**source,'_ai_event_identity':item['results'][0]}
                 item['ai_enrichment']={k:v for k,v in ai.audit.items() if k!='cache'}
@@ -365,7 +367,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
         report[kind]=item
         if on_result:on_result(kind,item)
     try:
-        if not research:research=research_job(source,pages,report)
+        if not research and not reviewed_only:research=research_job(source,pages,report)
         if research:ai.audit['research']={k:research.get(k) for k in ('id','status','reason')}
     except Exception:ai.audit['research']={'status':'unavailable'}
     return report,dict(mode='four_pass',started_at=started,pages=list(pages),pages_checked=len(pages),
