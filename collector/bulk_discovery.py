@@ -5,9 +5,45 @@ import hashlib
 import os
 import time
 from bs4 import BeautifulSoup
-from .aggregators import extract,task
+from .aggregators import extract,task,NoOrganizerLink
 from .crawler_reader import Crawl4AIReader,same_owner
 from .fetch import Fetcher,UnsafeDestination,RobotsPathDenied
+from .search import SearXNG,result_url,conference_page
+
+async def recover_organizer(db,job,page,title,deadline,remaining,report,
+                            search_factory=SearXNG,reader_factory=Crawl4AIReader):
+    """One search / at most three crawled results. Suggestions always require review."""
+    from .discovery import excluded
+    if report['requests']>=3 or remaining<=0 or time.monotonic()+20>=deadline:return []
+    query='"'+title[:160]+'" official conference website'
+    search=search_factory(deadline=min(deadline,time.monotonic()+15));report['requests']+=1
+    try:found=await asyncio.to_thread(search.search,query)
+    except Exception:
+        report['warnings'].append('Organizer search unavailable for '+page['url']);return []
+    finally:search.close()
+    candidates=[]
+    for item in found['results']:
+        url=result_url(item['url'])
+        if url and not excluded(url) and not same_owner(url,job['config']['url']) and url not in candidates:candidates.append(url)
+        if len(candidates)>=min(3,remaining):break
+    report['results']+=len(candidates)
+    results=[]
+    if not candidates:return results
+    try:
+        async with reader_factory(os.environ.get('COLLECTOR_USER_AGENT',''),deadline=min(deadline,time.monotonic()+45)) as reader:
+            for url in candidates:
+                if time.monotonic()+8>=deadline:break
+                try:
+                    candidate=await reader.read(url);report['pages_checked']+=1
+                    if not conference_page(candidate):continue
+                    state=db.crawl_job(job['id'])
+                    if not state or state.get('status')!='running' or state.get('cancel_requested'):break
+                    results.append(db.record_discovery(job['id'],page['url'],candidate['url'],'needs_review',title,
+                        None,None,{'method':'searxng_organizer_recovery','requires_review':True,'query':query,
+                            'verified_page':candidate['url']},'Search-located organizer candidate; ownership review required'))
+                except Exception:continue
+    except Exception:report['warnings'].append('Organizer candidate crawling unavailable for '+page['url'])
+    return results
 
 
 class StaticFirstReader:
@@ -49,12 +85,15 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
     db.enqueue_frontier(job,generation,[task(seed,phase='listing')])
     stats={'pages_scanned':0,'links_found':0,'sources_added':0,'duplicates':0,'needs_review':0,'rejected':0}
     errors=[];cancelled=False;processed=0;deadline=time.monotonic()+max(1,min(float(config.get('bulk_batch_seconds',180)),360))
+    search_report={'enabled':settings.get('search_enabled') is True,'requests':0,'results':0,'pages_checked':0,'warnings':[]}
+    config['search_report']=search_report;without_website=[]
     ai.deadline=deadline
     page_limit=max(1,min(int(config.get('max_pages',50)),100));source_limit=max(1,min(int(config.get('max_sources',50)),50))
-    def heartbeat():
+    def heartbeat(stage='Discovering organizer links'):
         s=db.crawl_job(job['id'])
         if not s or s.get('status')!='running' or s.get('cancel_requested'):return False
-        db.update_crawl_job(job['id'],{**stats,'heartbeat_at':datetime.now(timezone.utc).isoformat()});return True
+        config['progress_stage']=stage
+        db.update_crawl_job(job['id'],{**stats,'config':config,'errors':errors[-50:],'heartbeat_at':datetime.now(timezone.utc).isoformat()});return True
     async with reader_factory(os.environ.get('COLLECTOR_USER_AGENT',''),deadline=deadline,
         skip_robots_for=seed if settings.get('skip_robots') is True else None) as reader:
         while time.monotonic()<deadline and processed<source_limit:
@@ -70,6 +109,7 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
                     else:errors.append({'url':result.get('url',seed),'message':result.get('error','Source registration failed')[:400]})
                 continue
             if stats['pages_scanned']>=page_limit:break
+            if not heartbeat('Fetching next aggregator page'):cancelled=True;break
             pages=db.claim_frontier(job['id'],'page',1)
             if not pages:break
             item=pages[0];stats['pages_scanned']+=1
@@ -101,10 +141,22 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
                 if cancelled:break
                 db.enqueue_frontier(job,generation,safe_children)
                 db.finish_frontier(job['id'],item['id'])
+            except NoOrganizerLink as exc:
+                without_website.append(item['url'])
+                if search_report['enabled'] and heartbeat('Searching for the missing organizer website'):
+                    recovered=await recover_organizer(db,job,page,exc.title,deadline,source_limit-processed,search_report)
+                    for result in recovered:
+                        processed+=1;stats['links_found']+=1
+                        if result['status']=='existing':stats['duplicates']+=1
+                        elif result['status']=='needs_review':stats['needs_review']+=1
+                # Re-fetching the same complete listing cannot create a missing button.
+                db.finish_frontier(job['id'],item['id'])
+                config['listings_without_website']=without_website[-20:]
             except Exception as exc:
                 errors.append({'url':item['url'],'message':str(exc)[:400]})
                 db.fail_frontier(job['id'],item,str(exc)[:400])
         progress=db.frontier_progress(job['id'])
+        config['progress_stage']='Batch finished; continuation saved'
         progress.update(getattr(reader,'stats',{}));config['bulk_progress']=progress
         config['ai_enrichment']=ai.audit
         if progress.get('failed_tasks'):
@@ -113,7 +165,7 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
     status='cancelled' if cancelled else 'partial' if errors or progress['pending_pages'] or progress['pending_sources'] else 'completed'
     message=f"Bulk discovery: {stats['pages_scanned']} pages, {stats['sources_added']} added, {stats['duplicates']} existing; {progress['pending_pages']} pages and {progress['pending_sources']} links saved for continuation"
     if progress.get('failed_tasks'):message+=f"; {progress['failed_tasks']} failed tasks require review"
+    if without_website:message+=f"; {len(without_website)} listings lacked a website button (search suggestions require review)"
     db.update_crawl_job(job['id'],{**stats,'config':config,'status':status,'errors':errors[-50:],'summary':message,
         'completed_at':datetime.now(timezone.utc).isoformat()})
     return {**stats,'status':status,'bulk_progress':progress}
-

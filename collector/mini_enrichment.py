@@ -113,6 +113,9 @@ class MiniEnricher:
             if self.deadline is not None and time.monotonic()+22>=self.deadline:entry['reason']='time_budget_exhausted';return []
             primary=self.provider is not ask or os.environ.get('AI_ENRICHMENT_ENABLED')=='1' and bool(os.environ.get('OPENAI_API_KEY'))
             result=None
+            if not primary:
+                entry.update(provider='manus',status='deferred',reason='manus_agent_research_pass')
+                return []
             if primary:
                 reservation=len(json.dumps(payload,ensure_ascii=True).encode())+len(INSTRUCTIONS.encode())+MAX_OUTPUT_TOKENS+1000
                 if not self.budget.reserve(reservation):entry['reason']=self.budget.stopped or 'budget_exhausted';return []
@@ -305,4 +308,3 @@ def discover_links(page,seed,enricher):
             children.append(task(url,'source',listing_url=page['url'],title=label,evidence={
                 'method':'ai_observed_link','requires_review':True,'link_label':label}))
     return list({(c['url'],c['task_kind']):c for c in children}.values())
-

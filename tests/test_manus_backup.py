@@ -62,7 +62,8 @@ class ManusTests(unittest.TestCase):
   with patch.dict(os.environ,{'AI_ENRICHMENT_ENABLED':'0','OPENAI_API_KEY':'unused'}),patch('collector.manus_queue.enqueue',return_value={'id':'job','status':'queued'}) as queue:
    ai=MiniEnricher(budget=WorkerBudget())
    self.assertEqual(ai.choose('event_location','https://organizer.org','Cloud',['country'],PAYLOAD['nodes']),[])
-   self.assertEqual(ai.audit['calls'],0);queue.assert_called_once()
+   self.assertEqual(ai.audit['calls'],0);queue.assert_not_called()
+   self.assertEqual(ai.audit['passes'][0]['reason'],'manus_agent_research_pass')
    self.assertEqual(ai.audit['passes'][0]['provider'],'manus')
  def test_primary_failure_can_queue_manus_alternative(self):
   from collector.mini_enrichment import MiniEnricher,WorkerBudget
@@ -73,4 +74,3 @@ class ManusTests(unittest.TestCase):
    self.assertEqual(ai.audit['passes'][0]['provider'],'manus')
 
 if __name__=='__main__':unittest.main()
-

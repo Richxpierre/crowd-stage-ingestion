@@ -5,6 +5,11 @@ from bs4 import BeautifulSoup
 from .search import result_url
 from .crawler_reader import same_owner
 
+class NoOrganizerLink(ValueError):
+    def __init__(self,title):
+        self.title=title
+        super().__init__('Conference listing has no organizer website button')
+
 
 def task(url,kind='page',**payload):
     return {'url':url,'task_kind':kind,'payload':payload}
@@ -42,7 +47,13 @@ def extract(page,adapter,seed):
             for node in soup.select('a[href]'):
                 label=node.get_text(' ',strip=True)
                 if re.match(r'^visit\s*(?:the\s+)?(?:conference|website|site)\b',label,re.I):website(node,'aggregator_website_link')
-            if not children:raise ValueError('Conference Monkey detail has no explicit website button')
+            if not children:
+                from .automatic import EVENT_WORD
+                headings=soup.select('h1')
+                title=headings[0].get_text(' ',strip=True) if len(headings)==1 else ''
+                if EVENT_WORD.search(title) and len(soup.get_text(' ',strip=True))>150:
+                    raise NoOrganizerLink(title[:240])
+                raise ValueError('Conference Monkey detail has no explicit website button')
         else:
             for node in soup.select('a.post-link[href]'):
                 if urlsplit(link(node) or '').path.startswith('/conference/'):internal(node,'detail')

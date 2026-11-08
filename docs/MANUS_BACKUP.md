@@ -1,6 +1,6 @@
 # Manus mini enrichment
 
-Manus is the evidence-selection alternative while OpenAI is paused. Deterministic extraction runs first. Only missing fields are queued. Results contain observed node IDs, are rechecked against the current snapshot, and re-enter normal validation/publication review. No generated facts are directly published.
+Manus is the website-research alternative while OpenAI is paused. Deterministic extraction runs first. Only missing fields are queued. The agent browses up to three organizer pages for missing facts. Exact citations are independently fetched with Crawl4AI and rechecked against the current snapshot, and re-enter normal validation/publication review. No generated facts are directly published.
 
 ## Credit admission trigger
 
@@ -10,7 +10,7 @@ A Supabase advisory transaction lock and one global active task prevent simultan
 
 ## Async lifecycle
 
-Collectors enqueue at most three small requests per item and reuse fingerprints. They never wait for an agent or call task.create. Process Manus mini enrichment runs every five minutes, submits at most one admitted task per invocation, and reconciles its status/results. It does not resume agent questions or confirmations. Waiting/overlong tasks receive one stop request. Structured results use a maximum of eight observed selections, no fabricated URLs or values. The prompt is at most 2,000 bytes, lite/private, with connectors cleared and instructions to avoid browsing/tools.
+Collectors combine missing date, location, format and type fields into one durable research task per organizer/edition/month. They never wait for an agent or call task.create. Process Manus mini enrichment runs every five minutes, submits at most one admitted task per invocation, and reconciles its status/results. It does not resume agent questions or confirmations. Waiting/overlong tasks receive one stop request. The lite/private task may browse/search public pages on the organizer's own domain; it must return exact event headings, quotes, values and URLs. Crawl4AI verifies each citation independently with the guarded fetcher. Footer/catalog/cross-tenant evidence is rejected. Current deterministic fields win, and existing known edition dates cannot be replaced. Completed research is reverified when consumed by validation or each of the four parsers; it never publishes directly. An empty result does not repeatedly requeue consumers. Old node-selection jobs remain readable for compatibility.
 
 When a result is ready, matching Sources/validation rows become due for their normal guarded checks. Changed page evidence has a different fingerprint and does not reuse stale selections. Unknown usage is never described as zero model tokens. A failed task with unreported usage keeps its reservation for that period.
 
@@ -25,4 +25,3 @@ The signed webhook receiver records notifications and matches known task IDs. Po
 MANUS_API_KEY remains a repository secret. API keys, raw account profiles and reasoning transcripts are never persisted in task reports or dashboard records. A branch-specific live probe uses a real public organizer snapshot and at most one paid task; repeat pushes reuse its queue fingerprint. Ordinary unit tests do not use paid APIs.
 
 Official API references: https://open.manus.ai/docs/v2/task.create, https://open.manus.ai/docs/v2/task-lifecycle, https://open.manus.ai/docs/v2/usage.list.
-

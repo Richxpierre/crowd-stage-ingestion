@@ -11,10 +11,12 @@ concurrency:
 jobs:
   enrich:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      AI_ENRICHMENT_ENABLED: '0'
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
       MANUS_BACKUP_ENABLED: ${{ vars.MANUS_BACKUP_ENABLED }}
     steps:
@@ -22,10 +24,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt -r requirements-crawler.txt
+      - run: python -m playwright install --with-deps chromium
       - run: python -m collector.manus_queue
       - name: Publish readiness
         if: always()
         continue-on-error: true
         run: python -m scripts.report_enrichment_status --authenticate-manus
-

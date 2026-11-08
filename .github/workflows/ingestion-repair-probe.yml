@@ -1,0 +1,35 @@
+name: Verify ingestion repair and Manus research
+on:
+  push:
+    branches: [fix/ingestion-agent-progress]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: crowdstage-manus-mini
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
+      MANUS_BACKUP_ENABLED: '1'
+      AI_ENRICHMENT_ENABLED: '0'
+      SOURCE_PARSE_PASSES: '1'
+      COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt -r requirements-crawler.txt
+      - run: python -m playwright install --with-deps chromium
+      - run: python -m scripts.probe_ingestion_repair
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ingestion-repair-evidence
+          path: ingestion-repair-probe.json

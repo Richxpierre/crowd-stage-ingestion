@@ -2,9 +2,9 @@ import asyncio
 import copy
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch,AsyncMock,Mock
 from collector.aggregators import extract
-from collector.bulk_discovery import run_bulk_job,StaticFirstReader
+from collector.bulk_discovery import run_bulk_job,StaticFirstReader,recover_organizer
 
 SEED='https://sessionize.com/speakers-directory'
 def page(url,html):return {'url':url,'html':html,'links':[],'markdown':''}
@@ -77,6 +77,33 @@ class BulkTests(unittest.TestCase):
         r=extract(page(u,'<p><a href="https://conf.org/register">Registration</a></p><a href="https://conf.org/">Visit Website</a>'),'conference_monkey',u)
         self.assertEqual([x['url'] for x in r],['https://conf.org/'])
         with self.assertRaises(ValueError):extract(page(u,'<h1>Blocked</h1>'),'conference_monkey',u)
+    def test_complete_listing_without_button_uses_search_once_then_finishes(self):
+        seed='https://conferencemonkey.org/conference/missing'
+        Reader.pages={seed:page(seed,'<h1>Cloud Conference 2027</h1><p>'+('Event information. '*20)+'</p>')}
+        job={'id':'job','target_id':'target','config':{'url':seed,'max_pages':10,'max_sources':10,
+             'settings':{'adapter':'conference_monkey','search_enabled':True}}}
+        db=DB()
+        with patch('collector.bulk_discovery.recover_organizer',new_callable=AsyncMock,return_value=[{'status':'needs_review'}]) as recovery:
+            first=asyncio.run(run_bulk_job(db,job,Reader))
+            second=asyncio.run(run_bulk_job(db,job,Reader))
+        recovery.assert_awaited_once();self.assertEqual(first['needs_review'],1)
+        self.assertEqual(first['status'],'completed');self.assertEqual(second['pages_scanned'],0)
+        self.assertTrue(all(t['status']=='done' for t in db.tasks.values()))
+    def test_missing_button_search_is_bounded_and_never_adds_direct_sources(self):
+        import time
+        seed='https://conferencemonkey.org/top/conferences';official='https://cloudconf.org/'
+        search=Mock();search.search.return_value={'results':[{'url':official}]}
+        Reader.pages={official:page(official,'<h1>Cloud Conference 2027</h1>')}
+        db=DB();db.record_discovery=Mock(return_value={'status':'needs_review'})
+        report={'requests':0,'results':0,'pages_checked':0,'warnings':[]}
+        job={'id':'job','config':{'url':seed}}
+        result=asyncio.run(recover_organizer(db,job,page(seed+'/detail',''),'Cloud Conference 2027',time.monotonic()+90,3,report,lambda **kw:search,Reader))
+        self.assertEqual(result,[{'status':'needs_review'}]);self.assertEqual(report['requests'],1)
+        self.assertEqual(db.record_discovery.call_args.args[3],'needs_review')
+        self.assertTrue(db.record_discovery.call_args.args[7]['requires_review'])
+        report['requests']=3
+        self.assertEqual(asyncio.run(recover_organizer(db,job,page(seed,''),'Cloud',time.monotonic()+90,3,report,lambda **kw:search,Reader)),[])
+        search.search.assert_called_once()
     def test_cancelled_does_not_fetch_or_claim(self):
         db=DB();db.cancel=True
         result=asyncio.run(run_bulk_job(db,self.job(),Reader))
