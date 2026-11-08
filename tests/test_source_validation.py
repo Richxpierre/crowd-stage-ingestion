@@ -1,6 +1,6 @@
 import json
 import unittest
-from collector.source_validation import validate_website,website_root
+from collector.source_validation import validate_website,website_root,UnavailableSearch,worker_failure
 from collector.fetch import UnsafeDestination
 
 URL='https://organizer.org/conference'
@@ -19,6 +19,15 @@ class Search:
   if self.error:raise self.error
   return {'results':self.results,'warnings':None}
 class ValidationTests(unittest.IsolatedAsyncioTestCase):
+ async def test_missing_search_configuration_does_not_block_direct_proof(self):
+  result=await validate_website({'url':URL},Reader({URL:BODY}),UnavailableSearch(ValueError('Configure SEARXNG_URL')))
+  self.assertEqual(result['status'],'validated')
+  self.assertTrue(result['report']['search_skipped'])
+ def test_empty_timeout_message_remains_actionable(self):
+  result=worker_failure({'url':URL},TimeoutError())
+  self.assertEqual(result['report']['failure_code'],'timeout')
+  self.assertIn('time budget',result['report']['errors'][0]['message'])
+  self.assertNotIn('setup failed',result['reason'])
  async def test_session_page_needs_an_observed_parent_conference(self):
   child=ROOT+'/sessions/talk'
   result=await validate_website({'url':child},Reader({child:BODY,URL:BODY}),Search(results=[]))

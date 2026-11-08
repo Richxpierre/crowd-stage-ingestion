@@ -314,6 +314,22 @@ async def validate_website(candidate,reader,search):
         except Exception:pass
     return result
 
+class UnavailableSearch:
+    """An optional search setup failure must not discard complete direct proof."""
+    def __init__(self,error):self.error=str(error)[:500] or type(error).__name__
+    def search(self,query):raise RuntimeError('Search unavailable: '+self.error)
+    def close(self):pass
+
+
+def worker_failure(candidate,exc):
+    timed_out=isinstance(exc,(asyncio.TimeoutError,TimeoutError))
+    message=str(exc)[:750] or ('Validation time budget exhausted' if timed_out else type(exc).__name__)
+    report={'failure_code':'timeout' if timed_out else 'worker_error',
+            'errors':[{'stage':'validation_worker','type':type(exc).__name__,'message':message}]}
+    return {'status':'needs_review','canonical_url':candidate['url'],'parse_settings':{},'report':report,
+            'reason':('Validation time budget exhausted; review or retry' if timed_out else 'Validation worker error: '+message)[:1000]}
+
+
 async def run(limit=5,validation_id=None,dry_run=False):
     from .client import Client
     db=Client()
@@ -326,12 +342,13 @@ async def run(limit=5,validation_id=None,dry_run=False):
         deadline=min(worker_deadline,time.monotonic()+180)
         reader.deadline=deadline
         try:
-            search=SearXNG(deadline=deadline)
+            try:search=SearXNG(deadline=deadline)
+            except ValueError as exc:search=UnavailableSearch(exc)
             try:
                 result=await asyncio.wait_for(validate_website(candidate,reader,search),timeout=max(1,deadline-time.monotonic()))
             finally:search.close()
         except Exception as exc:
-            result={'status':'needs_review','canonical_url':candidate['url'],'parse_settings':{},'report':{'errors':[{'message':str(exc)[:750]}]},'reason':'Validator setup failed; retry after checking the worker'}
+            result=worker_failure(candidate,exc)
         if dry_run:
             result.update(status='needs_review',reason='Evidence-only validation preview: '+result['reason'])
         db.request('POST','rpc/finish_conference_source_validation',json={'p_id':candidate['id'],'p_result':result,'p_claim':candidate['claim_token']})
