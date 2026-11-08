@@ -1,3 +1,5 @@
+import asyncio
+import time
 import unittest
 from unittest.mock import Mock,patch
 from collector.industry import extract,classify
@@ -23,6 +25,20 @@ class IndustryTests(unittest.TestCase):
    research_job({'url':'https://organizer.org','name':'Community Conference 2027'}, {},results,db)
    self.assertEqual(enqueue.call_args.args[0]['fields'],['categories'])
    self.assertEqual(enqueue.call_args.args[0]['research_version'],2)
+ def test_complete_geography_still_reads_missing_industry_then_skips_paid_research(self):
+  from collector.metadata_worker import enrich
+  url='https://organizer.org';title='Community Conference 2027'
+  class Reader:
+   calls=0
+   async def read(self,target):
+    self.calls+=1
+    return {'url':target,'html':f'<main><h1>{title}</h1><p>An ethical hacking conference for cybersecurity professionals.</p></main>'}
+  reader=Reader();search=Mock();search.search.side_effect=AssertionError('No search needed')
+  db=Mock();db.request.return_value=[{'status':'matched','slug':'security'}]
+  record={'title':title,'start_date':'2027-06-12','end_date':'2027-06-13','event_url':url,'official_url':url,'source_url':url,'source_record_id':'one','format':'in_person','region':'Europe','country':'France','city':'Paris','categories':[],'_industry_resolved':False}
+  with patch('collector.manus_research.research_job') as research:
+   rows,audit=asyncio.run(enrich([record],{'url':url,'publisher':'Organizer','selectors':{'single_event':True}},reader,search,time.monotonic()+30,db=db))
+   self.assertEqual(reader.calls,1);self.assertIn('ethical hacking',rows[0]['industry_text']);research.assert_not_called();search.search.assert_not_called()
  def test_failed_research_is_reused_not_requeued(self):
   db=Mock();db.request.return_value=[{'status':'failed','id':'known'}]
   with patch('collector.manus_backup.configured',return_value=True),patch('collector.manus_queue.enqueue') as enqueue:
