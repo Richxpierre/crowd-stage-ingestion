@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import time
+import unicodedata
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from .automatic import parse_page, discover_links, same_site, date_range, EVENT_WORD
@@ -102,6 +103,57 @@ def overrides(kind, body, config, url):
         if value is not None: values[field]=value
     return nonempty(values)
 
+
+def verified_event_values(kind, body, config, url):
+    """Replay an admin's edition-specific facts only against the inspected page.
+
+    This is declarative data, never Python/JavaScript or instructions from a page.
+    A date recipe can fail closed when its evidence changes, requiring re-review.
+    """
+    recipes=config.get('verified_events') or []
+    if not isinstance(recipes,list) or len(recipes)>100:
+        raise ValueError('verified_events must be a list of at most 100 reviewed editions')
+    if not recipes:
+        if config.get('require_verified'):raise ValueError('Reviewed edition evidence changed or is missing; recheck this source before ingestion')
+        return []
+    def norm(value):
+        value=unicodedata.normalize('NFKC',str(value)).casefold()
+        return re.sub(r'[^\w]+',' ',value).strip()
+    soup=BeautifulSoup(body,'html.parser')
+    for noisy in soup.select('script,style,noscript'):noisy.decompose()
+    visible=norm(soup.get_text(' ',strip=True))
+    matched=[]
+    for recipe in recipes:
+        if not isinstance(recipe,dict):raise ValueError('Invalid reviewed event recipe')
+        if canonical_page(str(recipe.get('page_url','')))!=canonical_page(url):continue
+        proofs=recipe.get('require_text') or []
+        edition=str(recipe.get('edition',''))
+        if not re.fullmatch(r'\d{4}',edition) or not isinstance(proofs,list) or not 2<=len(proofs)<=12:
+            raise ValueError('Reviewed event needs an edition and 2-12 visible evidence excerpts')
+        if not all(isinstance(p,str) and 3<=len(p)<=600 for p in proofs):
+            raise ValueError('Invalid reviewed event evidence excerpt')
+        if not any(edition in p for p in proofs) or not all(norm(p) in visible for p in proofs):continue
+        title=plain(recipe.get('title'),240)
+        start=date_part(recipe.get('start_date'))
+        if not title or not start or start[:4]!=edition:raise ValueError('Reviewed event identity does not match its edition')
+        fields={k:v for k,v in (recipe.get('fields') or {}).items() if k in FIELDS[kind]}
+        for key,value in list(fields.items()):
+            if key.endswith('_url'):
+                fields[key]=clean_url(value)
+            elif key in ('start_date','end_date','cfp_deadline'):
+                fields[key]=date_part(value)
+            elif key in ('attendees','exhibitors','price_from'):
+                fields[key]=number(value,key!='price_from')
+        if fields.get('format') not in (None,'in_person','online','hybrid'):raise ValueError('Invalid reviewed format')
+        if kind=='event_date':
+            if fields.get('start_date')!=start:raise ValueError('Reviewed dates do not match event identity')
+            fields['source_record_id']=recipe.get('source_record_id') or canonical_page(recipe.get('event_url') or url)+'|'+edition
+        fields=nonempty(fields)
+        if fields:matched.append((recipe,title,start,fields))
+    if config.get('require_verified') and not matched:
+        raise ValueError('Reviewed edition evidence changed or is missing; recheck this source before ingestion')
+    return matched
+
 def extract_pass(kind, pages, source, config, on_page=None):
     results=[]
     for url,body in pages.items():
@@ -175,6 +227,14 @@ def extract_pass(kind, pages, source, config, on_page=None):
         if kind=='event_details' and (source.get('selectors') or {}).get('single_event'):
             image=choose_image(body,url,selectors=source.get('selectors'))
             add(source['name'],None,image,'page_image',source['url'])
+        for recipe,title,start,fields in verified_event_values(kind,body,config,url):
+            event_url=canonical_page(recipe.get('event_url') or source['url'])
+            if kind=='event_date':
+                results[:]=[row for row in results if not (
+                    row['fields'].get('source_record_id')==fields['source_record_id'] or
+                    (row['event_url']==event_url and ((source.get('selectors') or {}).get('single_event') or identity(row['title'])==identity(title))))]
+            add(title,start,fields,'admin_selectors',event_url,
+                {'manual_review':{'edition':recipe['edition'],'evidence':recipe['require_text'],'reviewed_at':recipe.get('reviewed_at')}})
         if on_page:on_page()
     return results
 
