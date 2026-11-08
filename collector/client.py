@@ -4,6 +4,10 @@ import os
 from datetime import datetime, timezone
 import requests
 
+class DatabaseError(RuntimeError):
+    """A database/transport failure must not be mistaken for a bad source page."""
+    pass
+
 class Client:
     def __init__(self):
         base = os.environ['SUPABASE_URL'].rstrip('/')
@@ -19,10 +23,14 @@ class Client:
             self.session.headers['Authorization'] = 'Bearer ' + key
 
     def request(self, method, path, **kwargs):
-        response = self.session.request(method, self.base + '/' + path, timeout=50, **kwargs)
+        try:
+            response = self.session.request(method, self.base + '/' + path, timeout=50, **kwargs)
+        except requests.RequestException:
+            raise DatabaseError(f'Supabase transport failed: {method} {path.split("?")[0]}') from None
         if not response.ok:
-            raise RuntimeError(f'Supabase {method} {path.split("?")[0]}: {response.status_code} {response.text[:300]}')
-        return response.json() if response.content else None
+            raise DatabaseError(f'Supabase {method} {path.split("?")[0]}: {response.status_code} {response.text[:300]}')
+        try:return response.json() if response.content else None
+        except ValueError:raise DatabaseError(f'Supabase returned invalid JSON: {method} {path.split("?")[0]}') from None
 
     def sources(self, slug=None):
         params = {

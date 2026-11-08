@@ -20,6 +20,15 @@ from .recovery import collect_source,reconcile_identities
 LOG = logging.getLogger('crowdstage-ingestion')
 BLOCKED_DIRECTORY_HOSTS = {'conferencegrid.com','sessionize.com'}
 
+def expected_source_error(exc):
+    """Source errors are already saved by sync_one; shared infrastructure errors are fatal."""
+    import socket
+    import requests
+    from .client import DatabaseError
+    from .recovery import RecoveryFailure
+    if isinstance(exc,DatabaseError) or str(exc).startswith('Supabase '):return False
+    return isinstance(exc,(requests.RequestException,ValueError,PermissionError,TimeoutError,socket.gaierror,RecoveryFailure))
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
@@ -179,18 +188,25 @@ def main():
             db.finish_parse_request(request['id'],'failed',str(exc)[:750])
     sources = [s for s in db.sources(slug=args.slug) if s['id'] not in handled][:max(0,args.limit_sources)]
     LOG.info('%d direct sources selected',len(sources))
-    failures = 0
+    failures = 0; fatal = False
     for index,s in enumerate(sources):
         if time.monotonic()>=run_deadline:
             LOG.warning('Run time budget reached; %d due sources deferred to the next scheduled run',len(sources)-index)
             break
         try:
             LOG.info('%s %s',s['slug'],json.dumps(sync_one(db,s,parse_only=args.parse_only)))
-        except Exception:
+        except Exception as exc:
             failures += 1
+            if not expected_source_error(exc):
+                fatal=True
+                LOG.error('Shared or unexpected worker failure; stopping the batch')
+                break
     if failures:
         LOG.error('%d of %d sources failed',failures,len(sources))
-        sys.exit(1)
+        # A normal batch can contain broken/blocked websites. Their saved errors
+        # must not trip the pipeline-wide circuit breaker and starve healthy URLs.
+        # An explicitly selected source still returns a failing exit status.
+        if fatal or args.slug:sys.exit(1)
 
 if __name__ == '__main__':
     main()
