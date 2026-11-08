@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
+      COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT || 'CrowdStage-Enrichment/1.0' }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       AI_ENRICHMENT_ENABLED: '0'
