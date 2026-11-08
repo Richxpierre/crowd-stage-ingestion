@@ -84,5 +84,15 @@ class SetupTests(unittest.TestCase):
   page={'url':DETAIL,'html':'<a class="btn" href="https://official.example/">Visit website</a><a class="btn" href="https://tickets.example/">Register now</a><a class="btn" href="https://ads.example/">Sponsor</a>'}
   inside,outside=mapped_links(page,SEED,[{'match_path':'/conference/*','website_selector':'a.btn','website_require_label':True}])
   self.assertEqual([n['url'] for n in outside],['https://official.example/'])
+ def test_event_listing_ranked_before_large_navigation(self):
+  html='<nav>'+''.join('<a href="/top/topic-'+str(i)+'">Conference topic</a>' for i in range(30))+'</nav><main><a class="post-link" href="/conference/real">Real Conference</a></main>'
+  nodes=observed_nodes({'url':SEED,'html':html},SEED)
+  followed=[n for n in nodes if n['hint']=='follow']
+  self.assertEqual([n['url'] for n in followed],[SEED.replace('/conferences','/conference/real')])
+
+ def test_explicit_button_wins_over_earlier_duplicate_url(self):
+  page={'url':DETAIL,'html':'<a class="more" href="https://official.example/">More Information</a><a class="button" href="https://official.example/">Visit Website</a>'}
+  nodes=observed_nodes(page,SEED)
+  self.assertEqual(len(nodes),1);self.assertEqual(nodes[0]['hint'],'website');self.assertIn('a.button',nodes[0]['selector'])
 
 if __name__=='__main__':unittest.main()

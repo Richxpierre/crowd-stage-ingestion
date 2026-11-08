@@ -3,6 +3,7 @@ import asyncio
 from datetime import datetime,timezone
 import os
 import time
+from urllib.parse import urlsplit
 from .crawler_reader import Crawl4AIReader,same_owner
 from .discovery_mapping import observed_nodes,path_pattern,mapped_links
 from .mini_enrichment import MiniEnricher
@@ -57,15 +58,19 @@ async def run_setup(db,job,reader_factory=Crawl4AIReader):
                 else:
                     # Explicit website buttons / recognized listing anchors need no paid inference.
                     selections=[(n['hint'],n) for n in nodes if n['hint']]
-                    if not any(f in ('website','follow') for f,n in selections):
+                    detail_page='/conference/' in urlsplit(url).path or '/speakers/' in urlsplit(url).path
+                    weak_follows=all(n.get('_priority',6)>=4 for f,n in selections if f=='follow')
+                    if not any(f=='website' for f,n in selections) and (detail_page or weak_follows or len({n['selector'] for f,n in selections if f=='follow'})>3):
+                        selections=[]
+                        fields=['website'] if detail_page else ['follow','website','pagination']
                         payload_nodes=[{k:n[k] for k in ('id','value','context','hint','label')} for n in nodes]
-                        chosen=await asyncio.to_thread(ai.choose,'discovery_setup',url,'Aggregator setup '+config['target_id'] if config.get('target_id') else 'Aggregator setup', ['follow','website','pagination'],payload_nodes)
+                        chosen=await asyncio.to_thread(ai.choose,'discovery_setup',url,'Aggregator setup '+job['target_id'],fields,payload_nodes)
                         byid={n['id']:n for n in nodes}
                         selections=[(c['field'],byid[c['node_id']]) for c in chosen if c.get('node_id') in byid]
                         if not selections and configured() and payload_nodes:
                             from .manus_queue import enqueue
                             payload={'stage':'discovery_setup','url':url,'event':'Aggregator setup '+job['target_id']+':'+generation,
-                                     'fields':['follow','website','pagination'],'nodes':payload_nodes}
+                                     'fields':fields,'nodes':payload_nodes}
                             queued=enqueue(payload,db)
                             if queued['status']=='completed':
                                 selections=[(c['field'],byid[c['node_id']]) for c in (queued.get('result') or {}).get('selections',[]) if c.get('node_id') in byid and c.get('field') in payload['fields']]
