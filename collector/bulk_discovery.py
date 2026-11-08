@@ -127,6 +127,11 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
                         children=await asyncio.to_thread(ai_discover,page,seed,ai)
                         if not children:raise
                 if not heartbeat():cancelled=True;break
+                filtered=page.get('discovery_filter_report')
+                if filtered:
+                    summary=config.setdefault('discovery_filter_report',{'historical_skipped':0,'examples':[]})
+                    summary['historical_skipped']+=filtered['historical_skipped']
+                    summary['examples']=(summary['examples']+filtered.get('examples',[]))[-10:]
                 # AI-selected links need ownership review; the deterministic bulk
                 # admission RPC intentionally only accepts known adapter evidence.
                 safe_children=[]
@@ -169,6 +174,7 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
     message=f"Bulk discovery: {stats['pages_scanned']} pages, {stats['sources_added']} added, {stats['duplicates']} existing; {progress['pending_pages']} pages and {progress['pending_sources']} links saved for continuation"
     if progress.get('failed_tasks'):message+=f"; {progress['failed_tasks']} failed tasks require review"
     if without_website:message+=f"; {len(without_website)} listings lacked a website button (search suggestions require review)"
+    if config.get('discovery_filter_report'):message+=f"; {config['discovery_filter_report']['historical_skipped']} historical event links skipped before validation"
     db.update_crawl_job(job['id'],{**stats,'config':config,'status':status,'errors':errors[-50:],'summary':message,
         'completed_at':datetime.now(timezone.utc).isoformat()})
     recovery.resume_if_ready()

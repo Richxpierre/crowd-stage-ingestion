@@ -45,6 +45,7 @@ def failure_code(result):
     text=reason+' '+' '.join(str(e.get('message','')).lower() for e in errors)
     if result.get('report',{}).get('terminal'):return 'unsafe_destination'
     if 'requires organizer review' in text:return 'organizer_review_required'
+    if 'ancillary event page' in text:return 'ancillary_event_page'
     if 'aggregator or excluded' in text:return 'excluded_platform'
     if '429' in text or 'rate limit' in text:return 'rate_limited'
     if 'robots policy denies access' in text:return 'policy_denied'
@@ -52,6 +53,7 @@ def failure_code(result):
     if re.search(r'\bhttp\s*401\b',text):return 'authentication_required'
     if 'for sale' in text or 'parked' in text:return 'parked_or_empty'
     if '403' in text or 'cloudflare' in text or 'blocked' in text or 'access denied' in text:return 'access_blocked'
+    if re.search(r'name or service not known|no address associated|getaddrinfo|name resolution|\bdns\b',text):return 'dns_failure'
     if 'robots' in text:return 'policy_unavailable'
     if 'empty rendered' in text:return 'empty_page'
     if '404' in text or '410' in text or 'not-found' in text:return 'missing_page'
@@ -111,10 +113,12 @@ def recovery_links(reader,search,original):
     for url,score in choices:
         url=clean_url(url)
         if not url or not scope_url(url,original) or url.rstrip('/') in reader.cache:continue
-        if re.search(r'\.(?:pdf|xml|ics|rss|jpg|png|zip)(?:$|\?)|/(?:privacy|login|terms|contact)(?:/|$)',url,re.I):continue
+        if re.search(r'\.(?:pdf|xml|ics|rss|jpg|png|zip)(?:$|\?)|/(?:privacy|login|terms|contact|board|team|partners|sponsors)(?:/|$)',url,re.I):continue
         match=len(anchors & tokens(urlsplit(url).path))
         # A different institutional subdomain/parent must match an observed event identity.
         if (urlsplit(url).hostname or '').removeprefix('www.')!=host and (not anchors or not match):continue
+        # A recovery of a specific event must not drift into unrelated menu pages.
+        if anchors and not match and not re.search(r'/events?(?:/|$)|/conferences?(?:/|$)',urlsplit(url).path,re.I):continue
         if reader.counts.get(url.rstrip('/'),0)>=1:continue
         output.append((score+match*5,url))
     return [url for _,url in sorted(set(output),key=lambda x:(-x[0],len(x[1]),x[1]))]
@@ -124,7 +128,7 @@ async def validate_with_recovery(candidate,reader,search,evaluate):
     original=clean_url(candidate['url'])
     if not original:raise ValueError('Use a public HTTPS organizer URL')
     bounded=BoundedReader(reader,original);finder=BoundedSearch(search)
-    strategies=[];attempts=[];errors=[];searches=[];pages=[]
+    strategies=[];attempts=[];errors=[];searches=[];pages=[];past_events=[]
     selected=original;name='original_event_page';baseline=[];outcome=None
     started=time.monotonic()
     for index in range(MAX_STRATEGIES):
@@ -136,6 +140,7 @@ async def validate_with_recovery(candidate,reader,search,evaluate):
             outcome={'status':'needs_review','canonical_url':selected,'parse_settings':{},'reason':'Validation strategy timed out',
                 'report':{'errors':[{'stage':'strategy','message':'Strategy time budget exhausted'}]}}
         report=outcome['report'];code=None if outcome['status']=='validated' else failure_code(outcome)
+        past_events.extend(report.get('past_events',[]))
         if index==0:baseline=report.get('event_evidence',[])
         if outcome['status']=='validated' and baseline:
             dates={(r['start_date'],r['end_date']) for r in baseline}
@@ -161,7 +166,7 @@ async def validate_with_recovery(candidate,reader,search,evaluate):
                 searches.append({'query':query,'results':[r for r in found.get('results',[]) if scope_url(r['url'],original)][:10],'warnings':found.get('warnings')})
             except Exception as exc:errors.append({'stage':'recovery_search','message':str(exc)[:500]})
         root=website_root(original)
-        if index==0 and original.rstrip('/')!=root and not (urlsplit(original).hostname or '').endswith('sites.google.com'):
+        if index==0 and code in ('missing_page','access_blocked','empty_page','server_error','timeout','dns_failure','policy_unavailable','tls_error') and original.rstrip('/')!=root and not (urlsplit(original).hostname or '').endswith('sites.google.com'):
             selected=root;name='organizer_root';continue
         links=recovery_links(bounded,finder,original)
         if links:selected=links[0];name='observed_or_search_event_page';continue
@@ -176,11 +181,15 @@ async def validate_with_recovery(candidate,reader,search,evaluate):
             continue
         break
     final=outcome['report']
+    if outcome['status']!='validated' and outcome.get('canonical_url')!=original:
+        final['proposed_canonical_url']=outcome.get('canonical_url')
+        outcome['canonical_url']=original
     canonical=urlsplit(outcome['canonical_url'])
     if canonical.path in ('','/') and not canonical.query:outcome['canonical_url']=website_root(outcome['canonical_url'])
     final.update(original_url=original,validation_version=2,strategies=strategies,strategy_limit=MAX_STRATEGIES,
         navigation_limit=MAX_READS,search_limit=MAX_SEARCHES,navigations_used=bounded.reads,searches_used=finder.requests,
         attempts=bounded.audit,errors=errors,searches=searches,pages=list(dict.fromkeys(pages)),
+        past_events=list({(e.get('title'),e.get('start_date'),e.get('end_date')):e for e in past_events}.values())[:20],
         failure_code=None if outcome['status']=='validated' else code)
     return outcome
 

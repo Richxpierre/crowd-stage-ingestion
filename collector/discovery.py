@@ -20,7 +20,7 @@ from .search import SearXNG,search_queries,conference_page
 LOG=logging.getLogger('crowdstage-discovery')
 EVENT_HINT=re.compile(r'conference|congress|symposium|convention|summit|expo|trade.?show|trade.?fair|workshop|con\b',re.I)
 OFFICIAL_HINT=re.compile(r'official|\bwebsite\b|\bhomepage\b|event\s*site|visit\s*(?:the\s+)?(?:site|conference)',re.I)
-DENY_HOSTS={'facebook.com','instagram.com','linkedin.com','twitter.com','x.com','youtube.com','youtu.be','tiktok.com','maps.google.com','accounts.google.com','play.google.com','apps.apple.com','eventbrite.com','meetup.com','inomics.com','10times.com','conferencemonkey.org','sessionize.com'}
+DENY_HOSTS={'facebook.com','instagram.com','linkedin.com','twitter.com','x.com','youtube.com','youtu.be','tiktok.com','maps.google.com','accounts.google.com','play.google.com','apps.apple.com','eventbrite.com','meetup.com','inomics.com','10times.com','conferencemonkey.org','sessionize.com','spotify.com','anchor.fm','soundcloud.com','web.archive.org','bsky.app','reddit.com'}
 SKIP=re.compile(r'/(?:login|signup|register|user|privacy|terms|legal|speaker|speakers|sessions?|schedule|blog|news|publish|contact|about|help)(?:/|$)',re.I)
 
 

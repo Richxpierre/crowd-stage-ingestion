@@ -5,6 +5,7 @@ facts join by event name, URL and edition, never by the source alone.
 """
 from __future__ import annotations
 from datetime import datetime, timezone
+import copy
 import hashlib
 import json
 import re
@@ -84,9 +85,11 @@ def node_fields(kind, node, body, url, source):
 
 def overrides(kind, body, config, url):
     """Explicit admin CSS mappings can extract optional facts without any dates."""
-    soup=BeautifulSoup(body,'html.parser'); values={}
+    values={}
     mapping=config.get('selectors') or {}
     if not isinstance(mapping,dict): raise ValueError('Pass selectors must be an object')
+    if not mapping:return {}
+    soup=BeautifulSoup(body,'html.parser')
     for field,selector in mapping.items():
         if field not in FIELDS[kind] or not isinstance(selector,str) or not selector.strip(): continue
         node=soup.select_one(selector)  # Invalid CSS fails just this pass.
@@ -183,10 +186,17 @@ def verified_event_values(kind, body, config, url):
         raise ValueError('Reviewed edition evidence changed or is missing; recheck this source before ingestion')
     return matched
 
-def extract_pass(kind, pages, source, config, on_page=None):
+def extract_pass(kind, pages, source, config, on_page=None, snapshot_cache=None):
     results=[]
     for url,body in pages.items():
         digest=hashlib.sha256(body).hexdigest()
+        signature=json.dumps({k:source.get(k) for k in ('url','name','publisher','selectors')},sort_keys=True,default=str)
+        cached=snapshot_cache.setdefault((url,digest,signature),{}) if snapshot_cache is not None else {}
+        if 'nodes' not in cached:cached['nodes']=list(event_nodes(body))
+        nodes=cached['nodes']
+        def page_records():
+            if 'records' not in cached:cached['records']=parse_page(body,source,url)
+            return copy.deepcopy(cached['records'])
         def add(title,start,fields,method,event_url=None,metadata=None):
             fields=nonempty(fields)
             original=event_url or url;canonical=canonical_page(original)
@@ -197,28 +207,31 @@ def extract_pass(kind, pages, source, config, on_page=None):
         custom=overrides(kind,body,config,url)
         dated=[]
         if kind=='event_date':
-            dated=parse_page(body,source,url)
+            dated=page_records()
             for record in dated:
                 if len(dated)==1 and (source.get('selectors') or {}).get('single_event'):
                     record.update(custom)
                 add(record['title'],record['start_date'],{**{k:record.get(k) for k in FIELDS[kind]},
                     'source_record_id':record['source_record_id']},'date_parser',record.get('event_url'))
         else:
-            for node in event_nodes(body):
+            for node_index,node in enumerate(nodes):
                 fields=node_fields(kind,node,body,url,source)
                 from .metadata import infer,GROUPS
                 venue,city,_,country=_extract_location(node.get('location'))
-                meta=infer(body,url,plain(node.get('name'),240) or '',dict(venue=venue,city=city,country=country),node)
+                metadata=cached.setdefault('schema_metadata',{})
+                if node_index not in metadata:metadata[node_index]=infer(body,url,plain(node.get('name'),240) or '',dict(venue=venue,city=city,country=country),node)
+                meta=copy.deepcopy(metadata[node_index])
                 if kind=='event_location' and fields.get('region') not in GROUPS:fields.pop('region',None)
                 for key,value in meta['fields'].items():
                     if key in FIELDS[kind]:fields.setdefault(key,value)
                 add(plain(node.get('name'),240),date_part(node.get('startDate')),
                     fields,'schema_event',clean_url(node.get('url')),meta)
-            soup=BeautifulSoup(body,'html.parser')
+            if 'soup' not in cached:cached['soup']=BeautifulSoup(body,'html.parser')
+            soup=cached['soup']
             # HTML-only extraction stays useful even when dates are missing.
             headings=soup.find_all('h1')
             title=plain(headings[0].get_text(' ',strip=True),240) if len(headings)==1 else None
-            if title and EVENT_WORD.search(title) and not list(event_nodes(body)):
+            if title and EVENT_WORD.search(title) and not nodes:
                 fields={}
                 if kind=='event_details':
                     meta=soup.find('meta',attrs={'name':'description'}) or soup.find('meta',property='og:description')
@@ -238,11 +251,13 @@ def extract_pass(kind, pages, source, config, on_page=None):
                         if len(values)==1:fields[field]=values.pop()
                 add(title,None,fields,'html_event_page')
         # Infer only on a uniquely dated event page; never borrow catalog/footer facts.
-        if kind!='event_date' and not list(event_nodes(body)):
+        if kind!='event_date' and not nodes:
             from .metadata import infer
-            dated_records=parse_page(body,source,url)
+            dated_records=page_records()
             if len(dated_records)==1:
-                rec=dated_records[0];meta=infer(body,url,rec['title'],rec,single_event=True)
+                rec=dated_records[0]
+                if 'html_metadata' not in cached:cached['html_metadata']=infer(body,url,rec['title'],rec,single_event=True)
+                meta=copy.deepcopy(cached['html_metadata'])
                 add(rec['title'],rec['start_date'],{k:v for k,v in meta['fields'].items() if k in FIELDS[kind]},
                     'metadata_rules',rec.get('event_url'),meta)
         # Unscoped HTML overrides are usable on a dedicated source only. Catalogs
@@ -339,6 +354,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
         url=queue.pop(0)
         if url in pages or url in errors:continue
         load(url)
+    snapshot_cache={}
     for kind in selected:
         cfg=options.get(kind) or {}; t=time.monotonic()
         item={**live[kind],'progress_stage':'extracting','pages_done':0,'pages_total':0,'heartbeat_at':now()}
@@ -353,7 +369,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
                 def page_done():
                     item.update(pages_done=item['pages_done']+1,heartbeat_at=now())
                     if on_result:on_result(kind,dict(item))
-                item['results']=extract_pass(kind,chosen,source,cfg,on_page=page_done)
+                item['results']=extract_pass(kind,chosen,source,cfg,on_page=page_done,snapshot_cache=snapshot_cache)
                 if not cfg.get('reviewed_only'):
                     item['results']=add_research(kind,pages,source,item['results'],research)
                     item['results'],_=enrich_pass(kind,chosen,source,cfg,item['results'],ai)
