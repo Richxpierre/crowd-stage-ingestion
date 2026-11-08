@@ -15,10 +15,13 @@ def enqueue(payload,db=None):
 
 def patch(db,job,values):
     result=db.request('PATCH','conference_manus_jobs',params={'id':'eq.'+job['id'],'claim_token':'eq.'+job['claim_token']},json=values)
-    if values.get('status') in ('failed','unknown') and job.get('payload',{}).get('stage')=='discovery_setup':wake_consumers(db,job)
+    if values.get('status') in ('failed','unknown') and job.get('payload',{}).get('stage') in ('discovery_setup','access_recovery'):wake_consumers(db,job)
     return result
 
 def wake_consumers(db,job):
+    if job['payload'].get('stage')=='access_recovery':
+        db.request('POST','rpc/resume_conference_access_recovery',json={'p_manus_job_id':job['id']})
+        return
     if job['payload'].get('stage')=='discovery_setup':
         db.request('POST','rpc/resume_conference_crawler_setup',json={'p_manus_job_id':job['id']})
         return

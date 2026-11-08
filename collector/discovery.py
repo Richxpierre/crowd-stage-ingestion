@@ -121,6 +121,8 @@ async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
     config['ai_enrichment']=ai.audit
     search_candidates={};search_report={'enabled':settings.get('search_enabled') is True,'requests':0,'results':0,'pages_checked':0,'warnings':[]}
     config['search_report']=search_report
+    from .access_recovery import AccessRecovery
+    recovery=AccessRecovery(db,job,config,deadline,search_factory)
     db.update_crawl_job(job['id'],{'config':config})
     recent=db.recent_crawled_pages(job['target_id'])
     def heartbeat(**extra):
@@ -165,7 +167,7 @@ async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
             if depth>0 and url in recent and not re.search(r'\.xml$|[?&]page=|/top/|/page/',url):continue
             visited.add(url);stats['pages_scanned']+=1
             try:
-                page=await reader.read(url)
+                page=await recovery.read(reader,url)
                 successful.append(url)
                 if search_hit:search_report['pages_checked']+=1
                 if external:
@@ -208,6 +210,7 @@ async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
                         if not heartbeat():cancelled=True;break
             except Exception as exc:
                 errors.append({'url':url,'message':str(exc)[:500]})
+                if recovery.waiting:break
                 if not fallback_seeds_added:
                     queue.extend((target,0) for target in settings.get('fallback_seeds',[]) if same_owner(target,seed) and target not in visited)
                     fallback_seeds_added=True
@@ -220,7 +223,8 @@ async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
     if search_report['enabled']:message+=f"; search: {search_report['requests']} queries, {search_report['results']} links, {search_report['pages_checked']} checked"
     db.update_crawl_job(job['id'],{**stats,'config':config,'errors':errors[-50:],'status':status,'summary':message,
         'visited_urls':successful,'completed_at':datetime.now(timezone.utc).isoformat()})
-    return {**stats,'status':status}
+    recovery.resume_if_ready()
+    return {**stats,'status':status,'awaiting_enrichment':recovery.waiting}
 
 
 def main():
@@ -247,7 +251,7 @@ def main():
             bulk=not job['config'].get('setup_only') and job['config'].get('settings',{}).get('adapter') in ('sessionize','conference_monkey')
             if args.drain_bulk and bulk:job['config']['bulk_batch_seconds']=max(1,min(180,worker_deadline-time.monotonic()))
             result=asyncio.run(run_job(db,job));LOG.info('Discovery result: %s',result)
-            if not(args.drain_bulk and bulk) or result.get('status')=='cancelled' or job['config'].get('bulk_probe') is True:break
+            if not(args.drain_bulk and bulk) or result.get('status')=='cancelled' or result.get('awaiting_enrichment') or job['config'].get('bulk_probe') is True:break
             next_id=db.continue_bulk_crawl(job['id'])
             if not next_id:break
             if time.monotonic()>=worker_deadline:
