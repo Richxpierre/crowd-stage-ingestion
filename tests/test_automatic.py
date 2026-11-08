@@ -13,6 +13,15 @@ CARDS=b'''<title>TwitchCon</title>
 <figure><time>22-23 May 2027</time><address>Berlin, Germany</address><h3>Berlin</h3></figure>'''
 
 class AutomaticTests(unittest.TestCase):
+    def test_empty_h1_is_missing_evidence_instead_of_a_type_error(self):
+        self.assertEqual(parse_page(b'<html><h1></h1><p>Welcome to our archive.</p></html>',AUTO,ROOT),[])
+    def test_explicit_localized_months_and_semantic_event_header(self):
+        self.assertEqual(date_range('08. – 10. Juni 2027'),('2027-06-08','2027-06-10'))
+        self.assertEqual(date_range('7–9 avril 2027'),('2027-04-07','2027-04-09'))
+        self.assertEqual(date_range('12-13 noviembre 2027'),('2027-11-12','2027-11-13'))
+        self.assertIsNone(date_range('11/12/2027'))
+        rows=parse_page(b'<title>HICSS | Hawaii International Conference</title><header><h1>HICSS-60</h1><p>January 5-8, 2027</p></header>',AUTO,ROOT)
+        self.assertEqual([(r['start_date'],r['end_date']) for r in rows],[('2027-01-05','2027-01-08')])
     def test_date_formats_and_invalid_dates(self):
         cases={'November 13-15, 2026':('2026-11-13','2026-11-15'),
                '22–23 May 2027':('2027-05-22','2027-05-23'),

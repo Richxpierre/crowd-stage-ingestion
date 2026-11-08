@@ -19,6 +19,12 @@ class Search:
   if self.error:raise self.error
   return {'results':self.results,'warnings':None}
 class ValidationTests(unittest.IsolatedAsyncioTestCase):
+ async def test_session_page_needs_an_observed_parent_conference(self):
+  child=ROOT+'/sessions/talk'
+  result=await validate_website({'url':child},Reader({child:BODY,URL:BODY}),Search(results=[]))
+  self.assertEqual(result['status'],'validated')
+  self.assertEqual(result['canonical_url'],URL)
+  self.assertEqual(result['report']['strategies'][0]['failure_code'],'ancillary_event_page')
  async def test_accepts_crawled_event_with_search_and_four_pass_plan(self):
   result=await validate_website({'url':URL},Reader({URL:BODY}),Search())
   self.assertEqual(result['status'],'validated')
@@ -33,11 +39,11 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
   reader=Reader({URL:PermissionError('HTTP 403'),ROOT:PermissionError('HTTP 403')})
   result=await validate_website({'url':URL},reader,Search())
   self.assertEqual(result['status'],'needs_review');self.assertEqual([u.rstrip('/') for u in reader.calls],[URL,ROOT])
- async def test_search_outage_or_empty_search_does_not_override_direct_event_proof(self):
+ async def test_complete_direct_event_proof_skips_optional_search(self):
   for search in (Search(error=RuntimeError('Search unavailable')),Search(results=[])):
    result=await validate_website({'url':URL},Reader({URL:BODY}),search)
    self.assertEqual(result['status'],'validated')
-   self.assertTrue(result['report']['warnings'])
+   self.assertTrue(result['report']['search_skipped'])
  async def test_future_dates_cannot_come_from_search_snippet(self):
   result=await validate_website({'url':URL},Reader({URL:'<h1>Cloud Conference</h1><p>Our annual conference is coming soon, please check back for details.</p>'}),Search())
   self.assertEqual(result['status'],'needs_review')

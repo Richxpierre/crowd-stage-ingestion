@@ -22,8 +22,20 @@ MONTHS = {name.lower(): n for n, names in enumerate([
     ('May',),('June','Jun'),('July','Jul'),('August','Aug'),
     ('September','Sep','Sept'),('October','Oct'),('November','Nov'),('December','Dec')
 ], 1) for name in names}
+# Explicit month names on organizer pages; numeric dates remain intentionally ambiguous.
+for number,names in enumerate([
+ ('Januar','janvier','enero','janeiro','januari','gennaio'),
+ ('Februar','février','fevrier','febrero','fevereiro','februari','febbraio'),
+ ('März','Maerz','mars','marzo','março','marco','maart'),
+ ('avril','abril','aprile'),('Mai','mayo','maio','mei','maggio'),
+ ('Juni','juin','junio','junho','giugno'),('Juli','juillet','julio','julho','luglio'),
+ ('août','aout','agosto','augustus'),('septembre','septiembre','setiembre','setembro','settembre'),
+ ('Oktober','octobre','octubre','outubro','ottobre'),('novembre','noviembre','novembro'),
+ ('Dezember','décembre','decembre','diciembre','dezembro','dicembre')
+],1):
+    MONTHS.update({name.casefold():number for name in names})
 M = '(?:' + '|'.join(sorted(MONTHS, key=len, reverse=True)) + r')\.?'
-D = r'\d{1,2}(?:st|nd|rd|th)?'
+D = r'\d{1,2}(?:st|nd|rd|th)?\.?'
 DATE_PATTERNS = [
     re.compile(fr'(?P<d>{D})\s+(?P<m>{M})\s+(?P<y1>20\d{{2}})\s*(?:-|–|—|to)\s*(?P<d2>{D})\s+(?P<m2>{M})\s+(?P<y>20\d{{2}})', re.I),
     re.compile(fr'(?P<m>{M})\s+(?P<d>{D})(?:\s*,?\s*(?P<y1>20\d{{2}}))?\s*(?:-|–|—|to|through)\s*(?:(?P<m2>{M})\s+)?(?P<d2>{D})\s*,?\s*(?P<y>20\d{{2}})', re.I),
@@ -32,14 +44,14 @@ DATE_PATTERNS = [
     re.compile(fr'(?P<d>{D})\s+(?P<m>{M})\s*,?\s*(?P<y>20\d{{2}})', re.I),
 ]
 SKIP_PATH = re.compile(r'/(?:schedule|sessions?|speakers?|news|blog|press|privacy|legal|terms|exit|login|signup|sponsors?|exhibitors?)(?:/|$)', re.I)
-EVENT_WORD = re.compile(r'conference|congress|symposium|convention|\bexpo\b|summit|trade.?show|festival|con\b|\bevent|jahrestagung', re.I)
+EVENT_WORD = re.compile(r'conference|conférence|conferencia|conferência|conferenza|konferenz|congress|kongress|congreso|congresso|symposium|convention|\bexpo\b|summit|trade.?show|festival|con\b|\bevent|jahrestagung', re.I)
 
 
 def date_range(text):
     text = re.sub(r'\s+', ' ', text or '').strip()
     text = re.sub(r'\bFeber\b','February',text,flags=re.I)
     text = re.sub(r'\b(?:Mo|Di|Mi|Do|Fr|Sa|So)\.\s*,?\s*','',text)
-    text = re.sub(fr'(\d{{1,2}})\.\s+(?={M})',r'\1 ',text,flags=re.I)
+    text = re.sub(fr'(\d{{1,2}})\.\s*(?={M})',r'\1 ',text,flags=re.I)
     # ISO ranges, including time datetime attributes; reject ambiguous numeric dates.
     iso = re.findall(r'\b20\d{2}-\d{2}-\d{2}(?!\d)', text)
     if iso:
@@ -210,11 +222,14 @@ def parse_event_hero(body,source,url):
     """A single event heading and an unambiguous nearby date, without invented location."""
     if SKIP_PATH.search(urlsplit(url).path):return []
     soup=BeautifulSoup(body,'html.parser')
-    for node in soup.select('nav,header,footer,script,style,aside'):node.decompose()
+    for node in soup.select('nav,footer,script,style,aside'):node.decompose()
     headings=soup.find_all('h1')
     if len(headings)!=1:return []
     heading=headings[0];title=plain(heading.get_text(' ',strip=True),240)
-    if not EVENT_WORD.search(title) or re.search(r'cancelled|canceled|call for|deadline|registration',title,re.I):return []
+    if title and not EVENT_WORD.search(title):
+        document_title=plain(soup.title.get_text(' ',strip=True),240) if soup.title else None
+        if document_title and EVENT_WORD.search(document_title):title=document_title
+    if not title or not EVENT_WORD.search(title) or re.search(r'cancelled|canceled|call for|deadline|registration',title,re.I):return []
     context=heading
     for _ in range(4):
         if not context.parent or context.parent.name in ('body','html'):break
@@ -245,7 +260,7 @@ def parse_event_hero(body,source,url):
 def parse_event_prose(body,source,url):
     """Explicit event-date sentences in article content; never infer a year or a venue."""
     soup=BeautifulSoup(body,'html.parser')
-    for node in soup.select('nav,header,footer,aside,script,style'):node.decompose()
+    for node in soup.select('nav,footer,aside,script,style'):node.decompose()
     scope=soup.find('main') or soup.find('article') or soup
     headings=[h for h in scope.find_all(['h1','h2','h3','h4']) if EVENT_WORD.search(h.get_text(' ',strip=True))
               and not re.search(r'^(?:upcoming|past|our|all)?\s*(?:events|conferences|news|calendar)\s*$',h.get_text(' ',strip=True),re.I)]

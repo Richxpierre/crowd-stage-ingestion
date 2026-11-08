@@ -1,12 +1,33 @@
 import json
 import unittest
 from collector.automatic import parse_page
-from collector.source_validation import validate_website
+from collector.source_validation import validate_website,visible_date_conflicts,bad_page,unrelated_page_event,ancillary_event_url
 from collector.validation_recovery import scope_url,BoundedSearch,failure_code
 from test_source_validation import Reader,Search,BODY,URL,ROOT
 
 SOURCE={'url':URL,'name':'Conference','publisher':'Organizer','kind':'auto','is_official_source':True,'selectors':{'website_only':True}}
 class EvidenceTests(unittest.TestCase):
+ def test_article_does_not_inherit_global_conference_schema(self):
+  page={'url':'https://conf.org/blog/api-design/','html':'<h1>Realtime streaming API architecture</h1>'}
+  records=[{'title':'JAX Conference 2027','event_url':'https://conf.org/mainz/'}]
+  self.assertEqual(unrelated_page_event(page,records),'https://conf.org/mainz/')
+  self.assertIsNone(unrelated_page_event({**page,'html':'<h1>JAX Conference</h1>'},records))
+  self.assertTrue(ancillary_event_url('https://conf.org/veranstaltung-86374-0-feedback.html'))
+ def test_individual_schedule_dates_do_not_contradict_multiday_event(self):
+  body=b'<p>September 1, 2026</p><p>November 12, 2026</p>'
+  self.assertEqual(visible_date_conflicts(body,[{'title':'CMS Conf','start_date':'2026-11-12','end_date':'2026-11-14'}]),[])
+ def test_client_error_shell_does_not_validate_from_sitewide_jsonld(self):
+  body='<html><head><title>Global Event</title><script type="application/ld+json">'+json.dumps({'@type':'Event','name':'Global Event 2027','startDate':'2027-04-08'})+'</script></head><body><div id="app"></div><div id="blazor-error-ui">An unhandled error has occurred. Reload</div></body></html>'
+  self.assertTrue(bad_page({'html':body}))
+ def test_structured_template_date_conflicts_with_two_visible_event_windows(self):
+  body=b'<main><h1>Affiliate Summit</h1><p>January 26-28, 2027</p><p>July 27-28, 2027</p></main>'
+  wrong=[{'title':'Affiliate Summit 2027','start_date':'2027-08-28','end_date':'2027-08-28'}]
+  self.assertTrue(visible_date_conflicts(body,wrong))
+  right=[{'title':'Affiliate Summit West 2027','start_date':'2027-01-26','end_date':'2027-01-28'}]
+  self.assertEqual(visible_date_conflicts(body,right),[])
+ def test_dns_library_messages_are_not_missing_event_evidence(self):
+  for message in ('[Errno -2] Name or service not known','No address associated with hostname','getaddrinfo failed'):
+   self.assertEqual(failure_code({'reason':message,'report':{}}),'dns_failure')
  def test_transport_failures_have_distinct_review_categories(self):
   cases={'HTTP 401':'authentication_required','HTTP 403':'access_blocked','HTTP 408':'timeout','HTTP 410':'missing_page',
          'HTTP 429':'rate_limited','HTTP 502':'server_error','HTTP 504':'timeout','certificate verify failed':'tls_error',

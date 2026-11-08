@@ -3,7 +3,7 @@ import copy
 import os
 import unittest
 from unittest.mock import patch,AsyncMock,Mock
-from collector.aggregators import extract
+from collector.aggregators import extract,historical_date_hint
 from collector.bulk_discovery import run_bulk_job,StaticFirstReader,recover_organizer
 
 SEED='https://sessionize.com/speakers-directory'
@@ -44,6 +44,19 @@ class DB:
                 'failed_tasks':sum(t['status']=='error' for t in self.tasks.values())}
 
 class BulkTests(unittest.TestCase):
+    def test_sessionize_skips_explicitly_past_dates_without_guessing_unknowns(self):
+        from datetime import date
+        self.assertTrue(historical_date_hint('February 2026',date(2026,11,8)))
+        self.assertFalse(historical_date_hint('November 2026',date(2026,11,8)))
+        self.assertFalse(historical_date_hint('November 15, 2026',date(2026,11,8)))
+        self.assertFalse(historical_date_hint(None,date(2026,11,8)))
+        old='<div class="c-s-event"><a class="c-s-event__name" href="https://old.org/2020/">Old Conference</a><span class="c-s-event__meta--date">February 2020</span></div>'
+        future='<div class="c-s-event"><a class="c-s-event__name" href="https://new.org/">New Conference</a><span class="c-s-event__meta--date">February 2099</span></div>'
+        p=page('https://sessionize.com/speaker','<section id="speaker"><h1 class="c-s-speaker-info__name">Speaker</h1></section><section id="events">'+old+future+'</section>')
+        rows=extract(p,'sessionize',SEED)
+        self.assertEqual([r['url'] for r in rows],['https://new.org/'])
+        self.assertEqual(rows[0]['payload']['evidence']['date_hint'],'February 2099')
+        self.assertEqual(p['discovery_filter_report']['historical_skipped'],1)
     def setUp(self):Reader.calls=[]
     def job(self):return {'id':'job','target_id':'target','config':{'url':SEED,'max_pages':12,'max_sources':17,'settings':{'adapter':'sessionize'}}}
     def test_thousand_links_survive_small_batches_without_restart(self):
