@@ -14,14 +14,19 @@ async def run_setup(db,job,reader_factory=Crawl4AIReader):
     config=job['config'];seed=config['url'];settings=config.get('settings') or {}
     state=config.get('setup_state') or {'queue':[seed],'visited':[],'steps':[],'examples':[],'errors':[]}
     deadline=time.monotonic()+150;ai=MiniEnricher(deadline=deadline)
+    from .access_recovery import AccessRecovery
+    recovery=AccessRecovery(db,job,config,deadline)
     generation=config.get('setup_generation') or job['id'];pending=None
 
     def finish(status,reason,generated=None):
         report={'status':status,'reason':reason,'pages_checked':len(state['visited']),'page_limit':3,
                 'steps':state['steps'],'example_urls':state['examples'][:5],'errors':state['errors'][-3:],
                 'ai':ai.audit,'manus_job_id':pending,'checked_at':datetime.now(timezone.utc).isoformat()}
-        return db.request('POST','rpc/finish_conference_crawler_setup',json={
+        if recovery.report:db.update_crawl_job(job['id'],{'config':{**config,'setup_state':state}})
+        result=db.request('POST','rpc/finish_conference_crawler_setup',json={
             'p_job_id':job['id'],'p_report':report,'p_generated':generated or {},'p_state':state})
+        recovery.resume_if_ready()
+        return result
 
     def heartbeat(stage):
         current=db.crawl_job(job['id'])
@@ -38,11 +43,17 @@ async def run_setup(db,job,reader_factory=Crawl4AIReader):
                 url=state['queue'].pop(0)
                 if not same_owner(url,seed) or url in state['visited']:continue
                 if not heartbeat('Mapping listing → event/profile → organizer website'):return finish('cancelled','Setup cancelled')
-                try:page=await reader.read(url)
+                try:page=await recovery.read(reader,url)
                 except Exception as exc:
-                    state['visited'].append(url);state['errors'].append({'url':url,'message':str(exc)[:300]});continue
+                    state['errors'].append({'url':url,'message':str(exc)[:300]})
+                    if recovery.waiting:
+                        state['queue'].insert(0,url)
+                        return finish('needs_review','Access blocked; mini enrichment is finding a public alternate route')
+                    if recovery.stopped:return finish('needs_review',recovery.report.get('reason','Access recovery needs review'))
+                    state['visited'].append(url);continue
                 if not same_owner(page['url'],seed):
                     state['visited'].append(url);state['errors'].append({'url':url,'message':'Cross-domain redirect needs review'});continue
+                if recovery.report.get('status')=='recovered':state['errors']=[e for e in state['errors'] if e['url']!=recovery.report.get('blocked_url')]
                 nodes=observed_nodes(page,seed);selections=[]
                 prior=state.pop('pending',None)
                 if prior and prior['url']==url:
@@ -97,7 +108,8 @@ async def run_setup(db,job,reader_factory=Crawl4AIReader):
                     state['queue'].extend(u for u in inside if u not in state['visited'] and u not in state['queue'])
                 if state['examples']:
                     return finish('ready','Verified organizer links on sampled aggregator pages',
-                                  {'discovery_mode':'website_links','discovery_steps':state['steps']})
+                                  {'discovery_mode':'website_links','discovery_steps':state['steps'],
+                                   **({'fallback_seeds':[recovery.report['recovered_url']]} if recovery.report.get('status')=='recovered' else {})})
         return finish('needs_review','No verified organizer-link sequence in the three-page sample. Check the entry URL or advanced settings.')
     except Exception as exc:
         state['errors'].append({'url':seed,'message':str(exc)[:300]})

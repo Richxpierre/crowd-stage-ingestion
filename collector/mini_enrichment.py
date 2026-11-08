@@ -130,7 +130,7 @@ class MiniEnricher:
                     entry.update(status='error',reason=str(exc) if str(exc) in ('missing_key','provider_http_401','provider_http_403','provider_http_429','provider_insufficient_quota','provider_rate_limit_exceeded','incomplete_response','invalid_response') else 'provider_error')
                     self.budget.stop(entry['reason'])
             if result is None:
-                if stage=='discovery_setup':
+                if stage in ('discovery_setup','access_recovery'):
                     # Setup owns durable continuation and its generation-scoped backup task.
                     entry['reason']='setup_worker_manages_backup';return []
                 from .manus_backup import configured,ManusError

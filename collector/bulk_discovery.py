@@ -88,6 +88,8 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
     search_report={'enabled':settings.get('search_enabled') is True,'requests':0,'results':0,'pages_checked':0,'warnings':[]}
     config['search_report']=search_report;without_website=[]
     ai.deadline=deadline
+    from .access_recovery import AccessRecovery
+    recovery=AccessRecovery(db,job,config,deadline)
     page_limit=max(1,min(int(config.get('max_pages',50)),100));source_limit=max(1,min(int(config.get('max_sources',50)),50))
     def heartbeat(stage='Discovering organizer links'):
         s=db.crawl_job(job['id'])
@@ -115,7 +117,7 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
             item=pages[0];stats['pages_scanned']+=1
             try:
                 if not same_owner(item['url'],seed):raise UnsafeDestination('Frontier page leaves approved aggregator')
-                page=await reader.read(item['url'])
+                page=await recovery.read(reader,item['url'])
                 try:children=extract(page,adapter,seed)
                 except ValueError:
                     if hasattr(reader,'read_rendered'):
@@ -155,6 +157,7 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
             except Exception as exc:
                 errors.append({'url':item['url'],'message':str(exc)[:400]})
                 db.fail_frontier(job['id'],item,str(exc)[:400])
+                if recovery.stopped:break
         progress=db.frontier_progress(job['id'])
         config['progress_stage']='Batch finished; continuation saved'
         progress.update(getattr(reader,'stats',{}));config['bulk_progress']=progress
@@ -168,4 +171,5 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
     if without_website:message+=f"; {len(without_website)} listings lacked a website button (search suggestions require review)"
     db.update_crawl_job(job['id'],{**stats,'config':config,'status':status,'errors':errors[-50:],'summary':message,
         'completed_at':datetime.now(timezone.utc).isoformat()})
-    return {**stats,'status':status,'bulk_progress':progress}
+    recovery.resume_if_ready()
+    return {**stats,'status':status,'bulk_progress':progress,'awaiting_enrichment':recovery.waiting,'access_recovery_stopped':recovery.stopped}

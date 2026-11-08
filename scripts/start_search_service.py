@@ -18,7 +18,8 @@ def main():
     args=parser.parse_args()
     if args.job_file:
         job=json.loads(args.job_file.read_text())
-        if job.get('config',{}).get('settings',{}).get('search_enabled') is not True:
+        settings=job.get('config',{}).get('settings',{})
+        if settings.get('search_enabled') is not True and settings.get('access_recovery_enabled') is False:
             print('Search assistance disabled for this job');return
     config=Path(tempfile.mkdtemp(prefix='crowdstage-search-'))
     (config/'settings.yml').write_text('use_default_settings: true\nserver:\n  secret_key: "'+secrets.token_hex(32)+'"\n  limiter: false\n  image_proxy: false\nsearch:\n  formats: [html, json]\n',encoding='utf-8')
