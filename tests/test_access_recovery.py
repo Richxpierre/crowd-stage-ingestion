@@ -87,5 +87,9 @@ class AccessTests(unittest.TestCase):
   recovery=self.recovery(config=cfg);reader=Reader()
   with self.assertRaises(AccessBlocked):asyncio.run(recovery.read(reader,SEED))
   self.assertFalse(reader.reads);self.assertEqual(Search.calls,0);self.assertTrue(recovery.stopped)
+ def test_configured_public_index_precedes_search_and_paid_enrichment(self):
+  cfg=copy.deepcopy(JOB['config']);cfg['settings']['fallback_seeds']=['https://outside.example/',ALT]
+  recovery=self.recovery(config=cfg);reader=Reader();page=asyncio.run(recovery.read(reader,SEED))
+  self.assertEqual(page['url'],ALT);self.assertEqual(reader.reads,[SEED,ALT]);self.assertEqual(Search.calls,0)
 
 if __name__=='__main__':unittest.main()

@@ -2,9 +2,10 @@
 
 Setup, ordinary discovery, and bulk adapters detect HTTP 403 / anti-bot failures
 and recognizable HTTP-200 challenge pages. A blocked run searches SearXNG once
+after trying any admin-configured public fallback indexes without AI credits,
 for public alternate pages on the same aggregator domain. Mini enrichment chooses
 only observed result IDs; it cannot invent URLs, selectors, facts, or code.
-Crawl4AI tests up to three selected pages using its existing destination, request,
+Crawl4AI tests up to three alternate pages total using its existing destination, request,
 robots, redirect and browser controls. Only the usual discovery/parser pipeline
 can turn an accessible page into organizer candidates. Search snippets are never
 event evidence, and publication/validation gates are unchanged.

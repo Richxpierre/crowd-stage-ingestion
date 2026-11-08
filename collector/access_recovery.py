@@ -73,6 +73,26 @@ class AccessRecovery:
             self.report.update(status='needs_review',reason='Insufficient run time for public-route recovery')
             raise AccessBlocked(self.report['reason'])
         try:
+            attempts=self.report.setdefault('attempts',[])
+            # Admin-supplied public indexes cost no AI credits and take priority.
+            fallback=self.config.get('settings',{}).get('fallback_seeds',[])
+            if isinstance(fallback,list) and not self.report.get('manus_job_id'):
+                for value in fallback[:3]:
+                    target=result_url(value)
+                    if not target or target==url or not same_owner(target,self.config['url']):continue
+                    if not self.live():raise AccessBlocked('Recovery cancelled')
+                    try:
+                        page=await reader.read(target)
+                        if not same_owner(page['url'],self.config['url']) or challenge_page(page) or not BeautifulSoup(page.get('html',''),'html.parser').select_one('a[href]'):raise AccessBlocked('Configured public index was blocked or empty')
+                        attempts.append({'url':target,'status':'accessible'})
+                        self.report.update(status='recovered',recovered_url=page['url'],provider='configured_route',reason='Configured public alternate loaded without AI credits. Normal discovery gates still apply.')
+                        return page
+                    except Exception as exc:
+                        attempts.append({'url':target,'status':'failed','message':str(exc)[:200]})
+                        if block_kind(exc)=='rate_limited':
+                            self.report.update(status='cooldown',reason='Alternate route rate limited; stop recovery until the next run')
+                            raise AccessBlocked(self.report['reason'])
+            if len(attempts)>=3:raise AccessBlocked('Three public alternate probes exhausted; no paid task requested')
             choices=[];nodes=self.report.get('candidates',[])
             if self.report.get('manus_job_id'):
                 rows=self.db.request('GET','conference_manus_jobs',params={'id':'eq.'+self.report['manus_job_id'],'select':'status,result,reason','limit':'1'})
@@ -113,8 +133,7 @@ class AccessRecovery:
             for choice in (queued.get('result') or {}).get('selections',[]):
                 target=allowed.get(choice.get('node_id'))
                 if choice.get('field')=='follow' and target and target not in urls:urls.append(target)
-            attempts=[];self.report['attempts']=attempts
-            for target in urls[:3]:
+            for target in urls[:max(0,3-len(attempts))]:
                 if not self.live():raise AccessBlocked('Recovery cancelled')
                 if time.monotonic()+8>=self.deadline:break
                 try:
@@ -124,10 +143,14 @@ class AccessRecovery:
                     attempts.append({'url':target,'status':'accessible'})
                     self.report.update(status='recovered',recovered_url=page['url'],reason='Mini-selected public route loaded. Normal discovery and validation gates still apply.')
                     return page
-                except Exception as exc:attempts.append({'url':target,'status':'failed','message':str(exc)[:200]})
+                except Exception as exc:
+                    attempts.append({'url':target,'status':'failed','message':str(exc)[:200]})
+                    if block_kind(exc)=='rate_limited':
+                        self.report.update(status='cooldown',reason='Alternate route rate limited; stop recovery until the next run')
+                        raise AccessBlocked(self.report['reason'])
             raise AccessBlocked('No accessible mini-selected route. Review access requirements or use an approved feed/API.')
         except Exception as exc:
-            if not self.waiting:self.report.update(status='needs_review',reason=str(exc)[:300])
+            if not self.waiting and self.report.get('status')!='cooldown':self.report.update(status='needs_review',reason=str(exc)[:300])
             raise AccessBlocked(self.report.get('original_error','Access blocked')+'; recovery: '+self.report['reason']) from None
 
     def resume_if_ready(self):

@@ -108,7 +108,8 @@ async def run_setup(db,job,reader_factory=Crawl4AIReader):
                     state['queue'].extend(u for u in inside if u not in state['visited'] and u not in state['queue'])
                 if state['examples']:
                     return finish('ready','Verified organizer links on sampled aggregator pages',
-                                  {'discovery_mode':'website_links','discovery_steps':state['steps']})
+                                  {'discovery_mode':'website_links','discovery_steps':state['steps'],
+                                   **({'fallback_seeds':[recovery.report['recovered_url']]} if recovery.report.get('status')=='recovered' else {})})
         return finish('needs_review','No verified organizer-link sequence in the three-page sample. Check the entry URL or advanced settings.')
     except Exception as exc:
         state['errors'].append({'url':seed,'message':str(exc)[:300]})
