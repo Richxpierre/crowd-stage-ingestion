@@ -47,8 +47,15 @@ def reconcile(db,client,job):
     if state['status'] in ('stopped','completed') and not state['background_running']:
         result=client.result(job['task_id'],job['payload'])
         if result is not None:
+            if job['payload'].get('stage')=='research':
+                patch(db,job,{'reason':'manus_verifying_citations'})
+                import asyncio
+                from .manus_research import verify
+                result=asyncio.run(verify(result,job['payload']))
             patch(db,job,{'status':'completed','result':result,'completed_at':datetime.now(timezone.utc).isoformat(),'reason':None})
-            wake_consumers(db,job);return 'completed'
+            if job['payload'].get('stage')!='research' or result.get('evidence'):wake_consumers(db,job)
+            else:patch(db,job,{'reason':'manus_no_supported_evidence'})
+            return 'completed'
         if age>240:
             patch(db,job,{'status':'failed','reason':'manus_no_verified_result','completed_at':datetime.now(timezone.utc).isoformat()})
             return 'failed'
@@ -99,4 +106,3 @@ def main():
     finally:client.close()
 
 if __name__=='__main__':main()
-

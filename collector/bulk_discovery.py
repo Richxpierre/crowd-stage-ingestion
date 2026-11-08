@@ -51,10 +51,11 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
     errors=[];cancelled=False;processed=0;deadline=time.monotonic()+max(1,min(float(config.get('bulk_batch_seconds',180)),360))
     ai.deadline=deadline
     page_limit=max(1,min(int(config.get('max_pages',50)),100));source_limit=max(1,min(int(config.get('max_sources',50)),50))
-    def heartbeat():
+    def heartbeat(stage='Discovering organizer links'):
         s=db.crawl_job(job['id'])
         if not s or s.get('status')!='running' or s.get('cancel_requested'):return False
-        db.update_crawl_job(job['id'],{**stats,'heartbeat_at':datetime.now(timezone.utc).isoformat()});return True
+        config['progress_stage']=stage
+        db.update_crawl_job(job['id'],{**stats,'config':config,'errors':errors[-50:],'heartbeat_at':datetime.now(timezone.utc).isoformat()});return True
     async with reader_factory(os.environ.get('COLLECTOR_USER_AGENT',''),deadline=deadline,
         skip_robots_for=seed if settings.get('skip_robots') is True else None) as reader:
         while time.monotonic()<deadline and processed<source_limit:
@@ -70,6 +71,7 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
                     else:errors.append({'url':result.get('url',seed),'message':result.get('error','Source registration failed')[:400]})
                 continue
             if stats['pages_scanned']>=page_limit:break
+            if not heartbeat('Fetching next aggregator page'):cancelled=True;break
             pages=db.claim_frontier(job['id'],'page',1)
             if not pages:break
             item=pages[0];stats['pages_scanned']+=1
@@ -105,6 +107,7 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
                 errors.append({'url':item['url'],'message':str(exc)[:400]})
                 db.fail_frontier(job['id'],item,str(exc)[:400])
         progress=db.frontier_progress(job['id'])
+        config['progress_stage']='Batch finished; continuation saved'
         progress.update(getattr(reader,'stats',{}));config['bulk_progress']=progress
         config['ai_enrichment']=ai.audit
         if progress.get('failed_tasks'):
@@ -116,4 +119,3 @@ async def run_bulk_job(db,job,reader_factory=StaticFirstReader):
     db.update_crawl_job(job['id'],{**stats,'config':config,'status':status,'errors':errors[-50:],'summary':message,
         'completed_at':datetime.now(timezone.utc).isoformat()})
     return {**stats,'status':status,'bulk_progress':progress}
-

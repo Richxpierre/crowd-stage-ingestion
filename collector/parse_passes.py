@@ -221,6 +221,10 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
             if isinstance(exc,UnsafeDestination) or getattr(getattr(exc,'response',None),'status_code',None)==429:
                 stop_fetching=True
         publish_collection()
+    from .manus_research import research_job,add_results as add_research
+    research=None
+    try:research=research_job(source,{},enqueue_missing=False)
+    except Exception:pass  # Optional provider queue cannot break deterministic extraction.
     load(root)
     # Shared crawl snapshot, fetched once. Do not stop after finding dates:
     # linked venue/about/ticket pages can supply the other passes.
@@ -228,6 +232,9 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
     from .recovery import fallback_urls
     for target in fallback_urls(source):
         if target not in queue:queue.append(target)
+    if research:
+        for row in (research.get('result') or {}).get('evidence',[]):
+            if row['page_url'] not in queue:queue.insert(0,row['page_url'])
     for kind in selected:
         cfg=options.get(kind) or {}
         for url in cfg.get('page_urls') or []:
@@ -252,6 +259,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
                     item.update(pages_done=item['pages_done']+1,heartbeat_at=now())
                     if on_result:on_result(kind,dict(item))
                 item['results']=extract_pass(kind,chosen,source,cfg,on_page=page_done)
+                item['results']=add_research(kind,pages,source,item['results'],research)
                 item['results'],_=enrich_pass(kind,chosen,source,cfg,item['results'],ai)
                 if kind=='event_date' and len(item['results'])==1:
                     source={**source,'_ai_event_identity':item['results'][0]}
@@ -262,6 +270,10 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
         item.update(completed_at=now(),duration_ms=round((time.monotonic()-t)*1000),progress_stage='complete',heartbeat_at=now())
         report[kind]=item
         if on_result:on_result(kind,item)
+    try:
+        if not research:research=research_job(source,pages,report)
+        if research:ai.audit['research']={k:research.get(k) for k in ('id','status','reason')}
+    except Exception:ai.audit['research']={'status':'unavailable'}
     return report,dict(mode='four_pass',started_at=started,pages=list(pages),pages_checked=len(pages),
                        errors=[{'url':u,'message':m} for u,m in errors.items()],parse_passes=report,ai_enrichment=ai.audit)
 
@@ -332,4 +344,3 @@ def retain_known_optional(records, observations, publisher):
         record['extraction']['retained_previous_fields']=retained
         _finish(record,publisher,record['source_record_id'])
     return records
-

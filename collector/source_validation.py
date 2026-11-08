@@ -109,7 +109,13 @@ async def _validate_site(candidate,reader,search):
         from .discovery import excluded
         if excluded(original):
             outcome['reason']='This URL belongs to an aggregator or excluded platform, not an organizer website';return outcome
-        first=await read(original)
+        try:first=await read(original)
+        except UnsafeDestination:raise
+        except Exception:
+            researched=(candidate.get('_research_job') or {}).get('result',{}).get('evidence',[])
+            urls=list(dict.fromkeys(row['page_url'] for row in researched if same_owner(row['page_url'],original)))
+            if not urls:raise
+            first=await read(urls[0])
         root_retry=False
         canonical=outcome['canonical_url']
         if not same_owner(first['url'],canonical):raise ValueError('Organizer ownership changed during navigation')
@@ -145,10 +151,24 @@ async def _validate_site(candidate,reader,search):
         audit['pages']=list(pages)
         source={'url':canonical,'name':candidate.get('title') or seed_host,'publisher':seed_host,
                 'kind':'auto','is_official_source':True,'selectors':{'website_only':True,'render':True}}
+        from .manus_research import research_job,add_results as add_research
+        research_source={**source,'url':candidate.get('_original_url') or candidate['url']}
+        research=candidate.get('_research_job')
+        try:
+            if not research:research=await asyncio.to_thread(research_job,research_source,{},enqueue_missing=False)
+        except Exception:pass
+        if research:
+            for item in (research.get('result') or {}).get('evidence',[])[:7]:
+                url=item['page_url']
+                if url not in pages and len(pages)<5:
+                    try:
+                        page=await read(url)
+                        if same_owner(page['url'],canonical):pages[page['url']]=page['html'].encode()
+                    except Exception:pass
         raw=[r for url,body in pages.items() for r in parse_page(body,source,url)]
         today=date.today().isoformat()
         future=[r for r in raw if r['end_date']>=today and int(r['start_date'][:4])<=date.today().year+2
-                and r.get('status')!='cancelled' and EVENT_WORD.search(r['title'])]
+                and r.get('status')!='cancelled' and EVENT_WORD.search(r.get('title') or '')]
         editions={(r['start_date'],r['end_date'],re.sub(r'\W+',' ',r['title']).casefold()) for r in future}
         all_editions={(r['start_date'],r['end_date'],re.sub(r'\W+',' ',r['title']).casefold()) for r in raw}
         single=len(editions)==1 and len(all_editions)==1
@@ -174,10 +194,16 @@ async def _validate_site(candidate,reader,search):
                     proposed={json.dumps(r['fields'][field],sort_keys=True) for r in trial if field in r['fields']}
                     if len(expected)!=1 or proposed!=expected:config['selectors'].pop(field)
             extracted=extract_pass(kind,{u:pages[u] for u in config['page_urls']},source,config)[:50]
+            extracted=add_research(kind,pages,source,extracted,research)
+            config['page_urls']=list(dict.fromkeys(config['page_urls']+[r['evidence']['page_url'] for r in extracted]))[:5]
             extracted,config=await asyncio.to_thread(enrich_pass,kind,{u:pages[u] for u in config['page_urls']},source,config,extracted,ai)
             plan[kind]=config
             results[kind]={'status':'success' if extracted else 'missing','results':extracted,'errors':[]}
         assembled=assemble(results,source)
+        try:
+            if not research:research=await asyncio.to_thread(research_job,research_source,pages,results)
+            if research:ai.audit['research']={k:research.get(k) for k in ('id','status','reason')}
+        except Exception:ai.audit['research']={'status':'unavailable'}
         audit['ai_enrichment']=ai.audit
         current=[r for r in assembled if r['end_date']>=today and int(r['start_date'][:4])<=date.today().year+2 and r.get('status')!='cancelled']
         audit.update(event_evidence=[{'title':r['title'],'start_date':r['start_date'],'end_date':r['end_date'],'url':r['event_url'],'page_url':r['source_url']} for r in current][:20],
@@ -188,7 +214,7 @@ async def _validate_site(candidate,reader,search):
         optional=sorted({field for r in current for field in r.get('extraction',{}).get('conflicting_fields',[]) if field not in critical})
         audit['warnings']=([{'code':'optional_conflicts','fields':optional,'message':'Conflicting optional values stay unknown; they do not invalidate the website.'}] if optional else [])
         if search_failed or not search_matches:audit['warnings'].append({'code':'search_unavailable' if search_failed else 'not_indexed','message':'Search could not corroborate this URL; admission requires directly crawled event evidence.'})
-        if not future or not current:outcome['reason']='No unambiguous upcoming conference edition found on the crawled website'
+        if not current:outcome['reason']='No unambiguous upcoming conference edition found on the crawled website'
         elif any(critical.intersection(r.get('extraction',{}).get('conflicting_fields',[])) for r in current):outcome['reason']='Conflicting event location facts require review'
         elif (candidate.get('evidence') or {}).get('requires_review') and not (candidate.get('evidence') or {}).get('admin_reviewed'):
             outcome['reason']='External search discovery requires organizer review before admission'
@@ -207,13 +233,23 @@ async def _validate_site(candidate,reader,search):
 async def validate_website(candidate,reader,search):
     from .validation_recovery import validate_with_recovery
     from .mini_enrichment import MiniEnricher
-    candidate={**candidate,'_mini_enricher':MiniEnricher((candidate.get('report') or {}).get('ai_enrichment'))}
+    candidate={**candidate,'_original_url':candidate['url'],'_mini_enricher':MiniEnricher((candidate.get('report') or {}).get('ai_enrichment'))}
+    from .manus_research import research_job
+    try:candidate['_research_job']=await asyncio.to_thread(research_job,{'url':candidate['url'],'name':candidate.get('title','')},{},enqueue_missing=False)
+    except Exception:pass
     async def evaluate(item,bounded,finder):
         # The recovery controller allows 45 seconds per strategy. Optional AI
         # must leave time for deterministic results to be returned and saved.
         item['_mini_enricher'].deadline=time.monotonic()+40
         return await _validate_site(item,bounded,finder)
-    return await validate_with_recovery(candidate,reader,search,evaluate)
+    result=await validate_with_recovery(candidate,reader,search,evaluate)
+    if result['status']=='needs_review' and result['report'].get('failure_code') not in ('unsafe_destination','excluded_platform','parked_or_empty','authentication_required','organizer_review_required','policy_denied','robots_path_denied'):
+        from .manus_research import research_job
+        try:
+            job=await asyncio.to_thread(research_job,{'url':candidate['url'],'name':candidate.get('title','')},{},result['report'].get('pass_results',{}))
+            if job:result['report'].setdefault('ai_enrichment',{})['research']={k:job.get(k) for k in ('id','status','reason')}
+        except Exception:pass
+    return result
 
 async def run(limit=5,validation_id=None,dry_run=False):
     from .client import Client
@@ -243,5 +279,4 @@ def main():
     parser.add_argument('--limit',type=int,default=5);parser.add_argument('--validation-id');parser.add_argument('--dry-run',action='store_true')
     args=parser.parse_args();asyncio.run(run(args.limit,args.validation_id,args.dry_run))
 if __name__=='__main__':main()
-
 

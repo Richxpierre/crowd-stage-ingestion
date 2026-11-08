@@ -249,7 +249,7 @@ def main():
                 try:LOG.info('Bulk handoff requested: %s',dispatch_bulk_continuation(db,job,next_id))
                 except Exception as exc:LOG.error('%s',exc)
                 break
-            job=db.claim_crawl_job(next_id)
+            job=db.claim_crawl_job()  # Oldest queued/due target wins; continuation remains durable.
             if not job:break
     except Exception as exc:
         db.update_crawl_job(job['id'],{'status':'failed','summary':str(exc)[:1000],
@@ -257,4 +257,3 @@ def main():
         raise
 
 if __name__=='__main__':main()
-
