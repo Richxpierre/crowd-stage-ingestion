@@ -1,4 +1,4 @@
-"""Bounded Crawl4AI/SearXNG enrichment before ingestion. No AI or auto-publication."""
+"""Bounded metadata/industry recovery with optional queued research; no publication."""
 import asyncio
 from html import unescape
 import os

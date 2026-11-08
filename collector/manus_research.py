@@ -118,6 +118,7 @@ def research_job(source,pages,results=None,db=None,enqueue_missing=True):
         except Exception:
             # A failed preview must not trigger an unbounded paid fallback.
             pass
+    if not dated:missing.append('categories')
     if not missing:return None
     return enqueue({'stage':'research','research_version':2,'url':source['url'],'event':title[:180],
         'fields':sorted(set(missing+(['city','venue'] if 'country' in missing else []))),'known':known,'period':date.today().strftime('%Y-%m')},db)
