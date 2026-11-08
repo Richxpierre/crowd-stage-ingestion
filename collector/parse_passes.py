@@ -133,6 +133,16 @@ def verified_event_values(kind, body, config, url):
         proofs=recipe.get('require_text') or []
         edition=str(recipe.get('edition',''))
         event_guard=recipe.get('require_event')
+        meta_guard=recipe.get('require_meta')
+        if meta_guard:
+            allowed={'og:type','og:title','og:description','description','dc.title','dc.description','event:start_time','event:end_time'}
+            if not isinstance(meta_guard,list) or not 2<=len(meta_guard)<=8:
+                raise ValueError('Reviewed metadata needs 2-8 exact evidence entries')
+            if not all(isinstance(m,dict) and m.get('key') in allowed and isinstance(m.get('content'),str) and 3<=len(m['content'])<=2000 for m in meta_guard):
+                raise ValueError('Invalid reviewed metadata evidence')
+            if not any(edition in m['content'] for m in meta_guard):continue
+            actual={(m.get('name') or m.get('property'),m.get('content')) for m in soup.find_all('meta')}
+            if not all((m['key'],m['content']) in actual for m in meta_guard):continue
         schema_match=False
         if event_guard:
             if not isinstance(event_guard,dict) or not re.fullmatch(r'[0-9a-f]{64}',str(event_guard.get('sha256',''))):
@@ -143,12 +153,12 @@ def verified_event_values(kind, body, config, url):
                 date_part(node.get('endDate') or node.get('startDate'))==event_guard.get('end_date') and
                 hashlib.sha256(json.dumps(node,sort_keys=True,separators=(',',':')).encode()).hexdigest()==event_guard['sha256']
                 for node in structured)
-        if not re.fullmatch(r'\d{4}',edition) or not isinstance(proofs,list) or not (0 if event_guard else 2)<=len(proofs)<=12:
+        if not re.fullmatch(r'\d{4}',edition) or not isinstance(proofs,list) or not (0 if event_guard or meta_guard else 2)<=len(proofs)<=12:
             raise ValueError('Reviewed event needs an edition and 2-12 visible evidence excerpts')
         if not all(isinstance(p,str) and 3<=len(p)<=600 for p in proofs):
             raise ValueError('Invalid reviewed event evidence excerpt')
         if event_guard and not schema_match:continue
-        if not event_guard and not any(edition in p for p in proofs):continue
+        if not event_guard and not meta_guard and not any(edition in p for p in proofs):continue
         if not all(norm(p) in visible for p in proofs):continue
         title=plain(recipe.get('title'),240)
         start=date_part(recipe.get('start_date'))

@@ -83,4 +83,15 @@ class VerifiedRecipeTests(unittest.TestCase):
         rows=extract_pass('event_date',{URL:body},source,{'verified_events':[recipe('event_date')],'require_verified':True})
         self.assertEqual([r['title'] for r in rows],['Cloud 2027'])
 
+    def test_exact_public_metadata_can_guard_local_dates_despite_utc_boundary(self):
+        description='Arts Conference takes place 9–11 June 2027 in Perth and online.'
+        body=('<meta property="og:type" content="event"><meta name="description" content="'+description+'"><meta property="event:start_time" content="2027-06-08T22:00:00Z">').encode()
+        rule={**recipe('event_date'),'start_date':'2027-06-09','require_text':[],
+              'require_meta':[{'key':'og:type','content':'event'},{'key':'description','content':description}],
+              'fields':{'start_date':'2027-06-09','end_date':'2027-06-11'}}
+        rows=extract_pass('event_date',{URL:body},SOURCE,{'verified_events':[rule],'require_verified':True})
+        self.assertEqual((rows[0]['fields']['start_date'],rows[0]['fields']['end_date']),('2027-06-09','2027-06-11'))
+        with self.assertRaisesRegex(ValueError,'evidence changed'):
+            extract_pass('event_date',{URL:body.replace(b'2027 in Perth',b'2028 in Perth')},SOURCE,{'verified_events':[rule],'require_verified':True})
+
 if __name__=='__main__':unittest.main()
