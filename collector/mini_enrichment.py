@@ -32,8 +32,10 @@ Do not select ads, social, login, payment, session/talk descriptions or unrelate
 
 
 def enabled():
-    from .manus_backup import configured
-    return os.environ.get('AI_ENRICHMENT_ENABLED') == '1' or configured()
+    from .manus_backup import configured as manus_configured
+    from .claude_client import configured as claude_configured
+    return (os.environ.get('AI_ENRICHMENT_ENABLED') == '1' or
+            claude_configured() or manus_configured())
 
 
 class WorkerBudget:
@@ -60,8 +62,17 @@ class ProviderError(RuntimeError):
         super().__init__(code);self.usage=usage or {}
 
 
-def ask(payload):
-    """One request, zero automatic retries. Provider error bodies never enter reports."""
+def ask_claude(payload):
+    from .claude_client import ClaudeClient, configured as claude_configured
+    if not claude_configured(): raise RuntimeError('missing_key')
+    client = ClaudeClient()
+    try:
+        return client.select_evidence(payload, INSTRUCTIONS)
+    finally:
+        client.close()
+
+
+def ask_openai(payload):
     key = os.environ.get('OPENAI_API_KEY')
     if not key: raise RuntimeError('missing_key')
     with requests.Session() as client:
@@ -84,6 +95,17 @@ def ask(payload):
         texts = [c['text'] for item in data.get('output',[]) for c in item.get('content',[]) if c.get('type')=='output_text']
         try:return json.loads(''.join(texts)), data.get('usage',{})
         except ValueError:raise ProviderError('invalid_response',data.get('usage')) from None
+
+
+def ask(payload):
+    """Core brain: Anthropic Claude primary, OpenAI fallback."""
+    from .claude_client import configured as claude_configured
+    if claude_configured():
+        try:
+            return ask_claude(payload)
+        except Exception:
+            if not os.environ.get('OPENAI_API_KEY'): raise
+    return ask_openai(payload)
 
 
 class MiniEnricher:
