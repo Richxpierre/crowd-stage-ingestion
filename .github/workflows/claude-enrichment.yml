@@ -16,9 +16,9 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001' }}
-      CLAUDE_ENRICHMENT_ENABLED: ${{ vars.CLAUDE_ENRICHMENT_ENABLED || '1' }}
-      COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT || 'CrowdStage-Intelligence/1.0' }}
+      ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
+      CLAUDE_ENRICHMENT_ENABLED: ${{ vars.CLAUDE_ENRICHMENT_ENABLED }}
+      COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,9 +26,9 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Run Claude Core Brain Worker
+      - name: Run Claude Core Brain Worker with Live Token Tracking
         run: python -m collector.claude_worker
-      - name: Publish readiness
+      - name: Publish readiness and live token tracking
         if: always()
         continue-on-error: true
         run: python -m scripts.report_enrichment_status
