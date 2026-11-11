@@ -35,6 +35,9 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       MANUS_BACKUP_ENABLED: ${{ vars.MANUS_BACKUP_ENABLED }}
       MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001' }}
+      CLAUDE_ENRICHMENT_ENABLED: ${{ vars.CLAUDE_ENRICHMENT_ENABLED || '1' }}
       MAX_SOURCES: '15'
       MAX_RUN_SECONDS: '600'
     steps:
