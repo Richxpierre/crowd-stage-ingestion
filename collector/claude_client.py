@@ -200,7 +200,7 @@ class ClaudeClient:
                 'live_tokens': stats
             }
 
-    def select_evidence(self, payload: dict, instructions: str, timeout: int = 25) -> tuple[dict, dict]:
+    def select_evidence(self, payload: dict, instructions: str, timeout: int = 15) -> tuple[dict, dict]:
         """Extract structured node selections matching SELECTION_SCHEMA."""
         tools = [{
             'name': 'evidence_selection',
@@ -209,13 +209,17 @@ class ClaudeClient:
         }]
         body = {
             'model': self.model,
-            'max_tokens': 450,
+            'max_tokens': 350,
             'system': instructions,
             'messages': [{'role': 'user', 'content': json.dumps(payload, ensure_ascii=True)}],
             'tools': tools,
             'tool_choice': {'type': 'tool', 'name': 'evidence_selection'}
         }
-        resp = self.session.post(API_URL, headers=self._headers(), json=body, timeout=timeout, allow_redirects=False)
+        try:
+            resp = self.session.post(API_URL, headers=self._headers(), json=body, timeout=timeout, allow_redirects=False)
+        except requests.Timeout:
+            LOG.warning('Claude request exceeded %ds timeout threshold; abandoned to conserve tokens', timeout)
+            raise RuntimeError('verification_timeout_abandoned')
         if resp.status_code != 200:
             self._handle_error(resp)
         data = resp.json()
@@ -233,7 +237,7 @@ class ClaudeClient:
                 except Exception: pass
         raise RuntimeError('invalid_response')
 
-    def research_fields(self, event_title: str, url: str, fields: list[str], page_text: str, timeout: int = 35) -> tuple[list[dict], dict]:
+    def research_fields(self, event_title: str, url: str, fields: list[str], page_text: str, timeout: int = 15) -> tuple[list[dict], dict]:
         """Extract missing fields with verbatim quotes from page text."""
         system_prompt = (
             'You are CrowdStage Core Intelligence. Research and extract ONLY directly observed conference fields '
@@ -244,7 +248,7 @@ class ClaudeClient:
             'event': event_title,
             'url': url,
             'fields_requested': fields,
-            'page_excerpt': page_text[:12000]
+            'page_excerpt': page_text[:3500]
         }
         tools = [{
             'name': 'research_evidence',
@@ -253,13 +257,17 @@ class ClaudeClient:
         }]
         body = {
             'model': self.model,
-            'max_tokens': 800,
+            'max_tokens': 400,
             'system': system_prompt,
             'messages': [{'role': 'user', 'content': json.dumps(payload, ensure_ascii=True)}],
             'tools': tools,
             'tool_choice': {'type': 'tool', 'name': 'research_evidence'}
         }
-        resp = self.session.post(API_URL, headers=self._headers(), json=body, timeout=timeout, allow_redirects=False)
+        try:
+            resp = self.session.post(API_URL, headers=self._headers(), json=body, timeout=timeout, allow_redirects=False)
+        except requests.Timeout:
+            LOG.warning('Claude request exceeded %ds timeout threshold; abandoned to conserve tokens', timeout)
+            raise RuntimeError('verification_timeout_abandoned')
         if resp.status_code != 200:
             self._handle_error(resp)
         data = resp.json()

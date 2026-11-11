@@ -27,7 +27,7 @@ def clean_page_text(html: str) -> str:
     text = soup.get_text(' ', strip=True)
     return re.sub(r'\s+', ' ', text)
 
-def fetch_page(url: str, timeout: int = 15) -> str | None:
+def fetch_page(url: str, timeout: int = 8) -> str | None:
     try:
         headers = {'User-Agent': os.environ.get('COLLECTOR_USER_AGENT') or 'CrowdStage-Intelligence/1.0'}
         resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
@@ -94,7 +94,21 @@ def process_manus_queue(db: Client, claude: ClaudeClient, limit: int = 5) -> int
             continue
 
         text = clean_page_text(html)
-        evidence, usage = claude.research_fields(event_title, url, fields, text)
+        try:
+            evidence, usage = claude.research_fields(event_title, url, fields, text)
+        except RuntimeError as exc:
+            if 'verification_timeout_abandoned' in str(exc):
+                LOG.warning('Claude verification abandoned for %s (timeout threshold exceeded to conserve tokens)', event_title)
+                db.request('PATCH', 'conference_manus_jobs', params={'id': 'eq.' + jid}, json={
+                    'status': 'completed',
+                    'result': {'evidence': []},
+                    'credits_used': 0,
+                    'completed_at': utc_now(),
+                    'reason': 'claude_verification_timeout_abandoned'
+                })
+                processed += 1
+                continue
+            raise
 
         if evidence:
             result = {'evidence': evidence}
@@ -153,7 +167,13 @@ def process_pending_events(db: Client, claude: ClaudeClient, limit: int = 10) ->
             continue
 
         text = clean_page_text(html)
-        evidence, _ = claude.research_fields(ev.get('name', 'Conference'), url, missing, text)
+        try:
+            evidence, _ = claude.research_fields(ev.get('name', 'Conference'), url, missing, text)
+        except RuntimeError as exc:
+            if 'verification_timeout_abandoned' in str(exc):
+                LOG.warning('Claude event verification abandoned for %s: time threshold exceeded', ev.get('name'))
+                continue
+            raise
 
         if evidence:
             patch = {}

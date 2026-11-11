@@ -82,7 +82,7 @@ async def verify(value,payload,reader=None):
                     'snapshot_sha256':hashlib.sha256(page['html'].encode()).hexdigest()})
     if reader:await collect(reader)
     elif value['evidence']:
-        async with Crawl4AIReader(os.environ.get('COLLECTOR_USER_AGENT',''),deadline=time.monotonic()+90) as browser:
+        async with Crawl4AIReader(os.environ.get('COLLECTOR_USER_AGENT',''),deadline=time.monotonic()+20) as browser:
             await collect(browser)
     return {'evidence':accepted,'verification':'crawl4ai_direct_organizer','proposed':len(value['evidence'])}
 
