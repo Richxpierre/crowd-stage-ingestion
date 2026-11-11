@@ -1,10 +1,14 @@
-"""Anthropic Claude core brain for CrowdStage conference enrichment.
+"""Anthropic Claude core brain with live token tracking for CrowdStage.
 High-speed, high-accuracy structured evidence selection using Claude 4.5.
 """
 from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 import requests
 
 LOG = logging.getLogger('crowdstage-claude')
@@ -58,6 +62,9 @@ RESEARCH_SCHEMA = {
     'additionalProperties': False
 }
 
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 def configured() -> bool:
     return (os.environ.get('CLAUDE_ENRICHMENT_ENABLED', '1') == '1' and
             bool(os.environ.get('ANTHROPIC_API_KEY')))
@@ -68,12 +75,70 @@ def get_model(prefer_sonnet: bool = False) -> str:
     return os.environ.get('ANTHROPIC_MODEL') or DEFAULT_MODEL
 
 
+class TokenTracker:
+    """Live session & persistent token tracking across worker processes."""
+    def __init__(self):
+        self.stats_file = Path(tempfile.gettempdir()) / 'crowdstage_claude_tokens.json'
+        self.load()
+
+    def load(self):
+        try:
+            if self.stats_file.exists():
+                data = json.loads(self.stats_file.read_text(encoding='utf-8'))
+                self.calls = int(data.get('calls', 0))
+                self.input_tokens = int(data.get('input_tokens', 0))
+                self.output_tokens = int(data.get('output_tokens', 0))
+                self.last_call_at = data.get('last_call_at')
+                return
+        except Exception:
+            pass
+        self.calls = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.last_call_at = None
+
+    def record(self, stage: str, in_tok: int, out_tok: int, model: str):
+        self.calls += 1
+        self.input_tokens += int(in_tok or 0)
+        self.output_tokens += int(out_tok or 0)
+        self.last_call_at = utc_now()
+        tot = self.input_tokens + self.output_tokens
+        LOG.info(
+            '[LIVE TOKEN TRACKER] Claude (%s): +%d in / +%d out tokens | Total: %d tokens across %d calls',
+            stage, in_tok, out_tok, tot, self.calls
+        )
+        try:
+            self.stats_file.write_text(json.dumps({
+                'calls': self.calls,
+                'input_tokens': self.input_tokens,
+                'output_tokens': self.output_tokens,
+                'total_tokens': tot,
+                'last_call_at': self.last_call_at,
+                'last_model': model
+            }, indent=2), encoding='utf-8')
+        except Exception:
+            pass
+
+    def get_stats(self) -> dict:
+        return {
+            'calls': self.calls,
+            'input_tokens': self.input_tokens,
+            'output_tokens': self.output_tokens,
+            'total_tokens': self.input_tokens + self.output_tokens,
+            'last_call_at': self.last_call_at
+        }
+
+
+LIVE_TRACKER = TokenTracker()
+
+
 class ClaudeClient:
     def __init__(self, key: str | None = None, model: str | None = None):
         self.key = key or os.environ.get('ANTHROPIC_API_KEY')
         self.model = model or get_model()
         self.session = requests.Session()
         self.session.trust_env = False
+        self.tracker = LIVE_TRACKER
 
     def close(self):
         self.session.close()
@@ -88,7 +153,8 @@ class ClaudeClient:
         }
 
     def authenticate(self) -> dict:
-        """Verify API key and return provider status dictionary."""
+        """Verify API key and return provider status dictionary with live token stats."""
+        stats = self.tracker.get_stats()
         if not self.key:
             return {
                 'provider': 'claude',
@@ -96,7 +162,8 @@ class ClaudeClient:
                 'credential_available': False,
                 'authenticated': False,
                 'reason': 'missing_key',
-                'model': self.model
+                'model': self.model,
+                'live_tokens': stats
             }
         try:
             resp = self.session.get(MODELS_URL, headers={'x-api-key': self.key, 'anthropic-version': ANTHROPIC_VERSION}, timeout=10)
@@ -108,7 +175,8 @@ class ClaudeClient:
                     'authenticated': True,
                     'task_creation_allowed': True,
                     'reason': 'active_core_brain',
-                    'model': self.model
+                    'model': self.model,
+                    'live_tokens': stats
                 }
             return {
                 'provider': 'claude',
@@ -117,7 +185,8 @@ class ClaudeClient:
                 'authenticated': False,
                 'task_creation_allowed': False,
                 'reason': f'http_{resp.status_code}',
-                'model': self.model
+                'model': self.model,
+                'live_tokens': stats
             }
         except Exception as exc:
             return {
@@ -127,7 +196,8 @@ class ClaudeClient:
                 'authenticated': False,
                 'task_creation_allowed': False,
                 'reason': str(exc)[:200],
-                'model': self.model
+                'model': self.model,
+                'live_tokens': stats
             }
 
     def select_evidence(self, payload: dict, instructions: str, timeout: int = 25) -> tuple[dict, dict]:
@@ -150,6 +220,10 @@ class ClaudeClient:
             self._handle_error(resp)
         data = resp.json()
         usage = data.get('usage', {})
+        in_tok = int(usage.get('input_tokens') or 0)
+        out_tok = int(usage.get('output_tokens') or 0)
+        self.tracker.record('selection', in_tok, out_tok, self.model)
+
         for block in data.get('content', []):
             if block.get('type') == 'tool_use' and block.get('name') == 'evidence_selection':
                 return block.get('input', {}), usage
@@ -190,6 +264,10 @@ class ClaudeClient:
             self._handle_error(resp)
         data = resp.json()
         usage = data.get('usage', {})
+        in_tok = int(usage.get('input_tokens') or 0)
+        out_tok = int(usage.get('output_tokens') or 0)
+        self.tracker.record('research', in_tok, out_tok, self.model)
+
         for block in data.get('content', []):
             if block.get('type') == 'tool_use' and block.get('name') == 'research_evidence':
                 inp = block.get('input', {})
