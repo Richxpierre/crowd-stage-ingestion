@@ -185,8 +185,8 @@ def field_nodes(body, kind):
     nodes=[];selectors={};contexts={}
     patterns={
         'event_date':r'20\d\d|datetime',
-        'event_stats':r'price|ticket|USD|EUR|GBP|\$|€|attendee|exhibitor|participant|online|virtual|hybrid|in.person',
-        'event_location':r'venue|location|address|city|country|held|takes place',
+        'event_stats':r'price|ticket|USD|EUR|GBP|\$|€|£|attendee|delegate|exhibitor|participant|online|virtual|hybrid|in.person|free|complimentary|no cost',
+        'event_location':r'venue|location|address|city|country|held|takes place|convention center|centre|hotel|hall|arena|expo center|auditorium',
         'event_details':r'conference|congress|summit|expo|trade.show|description|keyword|topic',
     }
     for n in soup.select('time,p,span,dd,td,h1,h2,h3,meta[itemprop],meta[name],meta[property]')[:250]:
@@ -250,11 +250,11 @@ def enrich_pass(kind,pages,source,config,results,enricher):
             if extras:return extras,{**config,'ai_proposal':{'page_url':url,'selectors':mapping,'version':VERSION}}
         return results,config
     present={k for r in results for k,v in r['fields'].items() if v not in (None,'',[],'unknown')}
-    priorities={'event_stats':('format',),'event_location':() if 'region' in present else ('country','city','venue'),
-                'event_details':('event_kind','categories')}
-    if (source.get('selectors') or {}).get('ai_optional_fields') is True:
-        priorities={'event_stats':('format','price_from','price_currency','attendees','exhibitors'),
-                    'event_location':('country','city','venue'),'event_details':('event_kind','summary','categories')}
+    priorities={
+        'event_stats': ('format', 'price_from', 'price_currency', 'attendees'),
+        'event_location': ('venue', 'country', 'city') if 'region' in present else ('country', 'city', 'venue'),
+        'event_details': ('event_kind', 'categories', 'summary')
+    }
     fields=[f for f in priorities[kind] if f not in present]
     if not fields:return results,config
     merged=list(results);new_config=dict(config)
@@ -285,6 +285,34 @@ def enrich_pass(kind,pages,source,config,results,enricher):
                 if code:values[field]=COUNTRIES[code][0]
                 else:values.pop(field)
             elif field=='price_currency' and not re.fullmatch(r'[A-Z]{3}',values[field]):values.pop(field)
+            elif field=='price_from':
+                raw_price = str(values[field])
+                if re.search(r'\b(?:free|complimentary|no cost|free admission|free registration|0\s*usd)\b', raw_price, re.I):
+                    values['price_from'] = 0.0
+                    if not values.get('price_currency'): values['price_currency'] = 'USD'
+                else:
+                    m = re.search(r'[\$€£]?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)', raw_price)
+                    if m:
+                        try:
+                            values['price_from'] = float(m.group(1).replace(',', ''))
+                            if not values.get('price_currency'):
+                                if '$' in raw_price or 'USD' in raw_price: values['price_currency'] = 'USD'
+                                elif '€' in raw_price or 'EUR' in raw_price: values['price_currency'] = 'EUR'
+                                elif '£' in raw_price or 'GBP' in raw_price: values['price_currency'] = 'GBP'
+                        except Exception:
+                            values.pop(field)
+                    else:
+                        values.pop(field)
+            elif field=='attendees':
+                raw_att = str(values[field])
+                m = re.search(r'([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{2,7})', raw_att)
+                if m:
+                    try:
+                        n = int(m.group(1).replace(',', ''))
+                        if 10 <= n <= 500000: values['attendees'] = n
+                        else: values.pop(field)
+                    except Exception: values.pop(field)
+                else: values.pop(field)
             elif field in ('format','event_kind'):
                 raw=values[field]
                 inferred=infer(('<main><h1>'+raw+'</h1><p>'+raw+'</p></main>').encode(),url,raw, single_event=True)

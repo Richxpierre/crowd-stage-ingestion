@@ -142,7 +142,7 @@ def process_pending_events(db: Client, claude: ClaudeClient, limit: int = 10) ->
     try:
         events = db.request('GET', 'events', params={
             'status': 'eq.pending_review',
-            'select': 'id,slug,name,external_url,country,city,venue,format,start_date,end_date,metadata_report',
+            'select': 'id,slug,name,external_url,country,city,venue,format,price_from,attendees,cover_url,start_date,end_date,metadata_report',
             'order': 'created_at.desc',
             'limit': str(limit)
         })
@@ -156,6 +156,8 @@ def process_pending_events(db: Client, claude: ClaudeClient, limit: int = 10) ->
         if not ev.get('city'): missing.append('city')
         if not ev.get('format'): missing.append('format')
         if not ev.get('venue'): missing.append('venue')
+        if ev.get('price_from') is None: missing.append('price_from')
+        if not ev.get('attendees'): missing.append('attendees')
 
         url = ev.get('external_url')
         if not missing or not url:
@@ -184,9 +186,23 @@ def process_pending_events(db: Client, claude: ClaudeClient, limit: int = 10) ->
                 field = item.get('field')
                 val = item.get('value')
                 if field and val and field in missing:
-                    patch[field] = val
+                    if field == 'price_from':
+                        raw_p = str(val).lower()
+                        if 'free' in raw_p or 'complimentary' in raw_p or 'no cost' in raw_p or raw_p == '0':
+                            patch['price_from'] = 0.0
+                        else:
+                            m = re.search(r'[\$€£]?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)', str(val))
+                            if m: patch['price_from'] = float(m.group(1).replace(',', ''))
+                    elif field == 'attendees':
+                        m = re.search(r'([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{2,7})', str(val))
+                        if m:
+                            n = int(m.group(1).replace(',', ''))
+                            if 10 <= n <= 500000: patch['attendees'] = n
+                    else:
+                        patch[field] = val
+
                     existing_evidence[field] = {
-                        'value': val,
+                        'value': patch.get(field, val),
                         'method': 'claude_core_brain',
                         'confidence': 'high',
                         'page_url': url,
