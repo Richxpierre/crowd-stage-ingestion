@@ -63,8 +63,22 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: chromium-${{ runner.os }}-${{ hashFiles('requirements.txt', 'requirements-crawler.txt') }}
-      - if: steps.pending.outputs.has_work == 'true'
-        run: python -m playwright install --with-deps chromium
+      - name: Install Playwright Chromium with retries
+        if: steps.pending.outputs.has_work == 'true'
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            echo "Attempt $i to install Playwright chromium..."
+            if python -m playwright install --with-deps chromium; then
+              echo "Playwright chromium installed successfully"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying after update..."
+            sudo apt-get update --fix-missing || true
+            sleep 5
+          done
+          echo "Failed to install Playwright chromium after 3 attempts"
+          exit 1
       - if: steps.pending.outputs.has_work == 'true'
         run: python scripts/start_search_service.py
       - name: Validate queued websites
