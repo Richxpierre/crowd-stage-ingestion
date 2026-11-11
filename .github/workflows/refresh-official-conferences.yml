@@ -41,17 +41,81 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - run: pip install -r requirements.txt -r requirements-crawler.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-crawler.txt
+      - run: pip install -r requirements.txt
       - name: Report enrichment configuration (no paid API calls)
         continue-on-error: true
         run: python -m scripts.report_enrichment_status
-      - uses: actions/cache@v4
+      - name: Check for due conference sources or pending parse requests
+        id: precheck
+        shell: bash
+        env:
+          SOURCE_SLUG: ${{ inputs.source_slug }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          from collector.client import Client
+
+          slug = os.environ.get('SOURCE_SLUG', '').strip()
+          has_work = False
+
+          if slug:
+              print(f"Manual run requested for source slug: {slug}")
+              has_work = True
+          else:
+              try:
+                  client = Client()
+                  sources = client.sources()
+                  if sources:
+                      print(f"Found {len(sources)} due source(s) to refresh")
+                      has_work = True
+                  else:
+                      print("No sources currently due for refresh")
+                      try:
+                          requests = client.request('GET', 'conference_source_parse_requests', params={'status': 'eq.queued', 'limit': '1'})
+                          if requests:
+                              print("Found queued parse request(s)")
+                              has_work = True
+                      except Exception as e:
+                          print(f"Note: Could not check parse requests: {e}")
+              except Exception as e:
+                  print(f"Warning: Precheck failed to query Supabase ({e}). Will proceed with run as safeguard.")
+                  has_work = True
+
+          output_file = os.environ.get('GITHUB_OUTPUT')
+          if output_file:
+              with open(output_file, 'a', encoding='utf-8') as f:
+                  f.write(f"has_work={'true' if has_work else 'false'}\n")
+          PY
+      - if: steps.precheck.outputs.has_work == 'true'
+        run: pip install -r requirements-crawler.txt
+      - if: steps.precheck.outputs.has_work == 'true'
+        uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: chromium-${{ runner.os }}-${{ hashFiles('requirements.txt', 'requirements-crawler.txt') }}
-      - run: python -m playwright install --with-deps chromium
-      - run: python scripts/start_search_service.py
+      - name: Install Playwright Chromium with retries
+        if: steps.precheck.outputs.has_work == 'true'
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            echo "Attempt $i to install Playwright chromium..."
+            if python -m playwright install --with-deps chromium; then
+              echo "Playwright chromium installed successfully"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying after update..."
+            sudo apt-get update --fix-missing || true
+            sleep 5
+          done
+          echo "Failed to install Playwright chromium after 3 attempts"
+          exit 1
+      - if: steps.precheck.outputs.has_work == 'true'
+        run: python scripts/start_search_service.py
       - name: Refresh websites
+        if: steps.precheck.outputs.has_work == 'true'
         shell: bash
         env:
           SOURCE_SLUG: ${{ inputs.source_slug }}
@@ -65,6 +129,5 @@ jobs:
             python -m collector.sync
           fi
 
-      - if: always()
+      - if: always() && steps.precheck.outputs.has_work == 'true'
         run: docker rm -f crowdstage-search || true
-
