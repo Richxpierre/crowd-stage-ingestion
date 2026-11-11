@@ -35,6 +35,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       MANUS_BACKUP_ENABLED: ${{ vars.MANUS_BACKUP_ENABLED }}
       MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
+      MAX_SOURCES: '15'
+      MAX_RUN_SECONDS: '600'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
