@@ -155,6 +155,7 @@ def process_pending_events(db: Client, claude: ClaudeClient, limit: int = 10) ->
         if not ev.get('country'): missing.append('country')
         if not ev.get('city'): missing.append('city')
         if not ev.get('format'): missing.append('format')
+        if not ev.get('region'): missing.append('region')
         if not ev.get('venue'): missing.append('venue')
         if ev.get('price_from') is None: missing.append('price_from')
         if not ev.get('attendees'): missing.append('attendees')
@@ -210,10 +211,35 @@ def process_pending_events(db: Client, claude: ClaudeClient, limit: int = 10) ->
                     }
 
             if patch:
+                # Format normalization
+                if patch.get('format') == 'in_person':
+                    patch['format'] = 'in-person'
+
+                # Auto-derive macro region from country if missing
+                c_val = patch.get('country') or ev.get('country')
+                if c_val and not patch.get('region') and not ev.get('region'):
+                    from .metadata import region_for
+                    derived_region = region_for(c_val)
+                    if derived_region:
+                        patch['region'] = derived_region
+                        existing_evidence['region'] = {
+                            'value': derived_region,
+                            'method': 'country_macro_mapping',
+                            'confidence': 'high',
+                            'page_url': url,
+                            'text': f'Derived from country {c_val}'
+                        }
+
+                # Auto-publish if required minimum criteria (format & region) are fulfilled
+                final_format = patch.get('format') or ev.get('format')
+                final_region = patch.get('region') or ev.get('region')
+                if final_format and final_region and final_format in ('in-person', 'hybrid', 'virtual'):
+                    patch['status'] = 'published'
+
                 patch['metadata_report'] = {**meta, 'evidence': existing_evidence}
                 try:
                     db.request('PATCH', 'events', params={'id': 'eq.' + ev['id']}, json=patch)
-                    LOG.info('Enriched %s with %s', ev.get('name'), list(patch.keys()))
+                    LOG.info('Enriched %s with %s (status=%s)', ev.get('name'), list(patch.keys()), patch.get('status', ev.get('status')))
                     enriched += 1
                 except Exception as exc:
                     LOG.warning('Failed to patch event %s: %s', ev['id'], exc)
