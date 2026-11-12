@@ -98,6 +98,8 @@ def classify_links(page,seed,settings):
     internal=list(dict.fromkeys(internal))
     # Reach actual listings before navigation/category pages on large catalogs.
     internal.sort(key=lambda u:0 if re.search(r'/conference/|/e/|20\d{2}',u) else 1)
+    buttons=[item for item in official if re.match(r'^\s*visit\s*(?:the\s+)?(?:conference|website|site)\b',item['label'],re.I)]
+    if buttons:official=buttons
     return internal,list({item['url']:item for item in official}.values())
 
 
@@ -190,7 +192,7 @@ async def run_job(db,job,reader_factory=Crawl4AIReader,search_factory=SearXNG):
                     internal=[x['url'] for x in proposed if x['task_kind']=='page']
                     candidates=[{'url':x['url'],'label':x['payload'].get('title',''),'ai':True} for x in proposed if x['task_kind']=='source']
                 if depth<depth_limit:
-                    queue.extend((target,depth+1) for target in internal if target not in visited and (target not in recent or re.search(r'\.xml$|[?&]page=|/top/|/page/',target)) and target not in {u for u,_ in queue})
+                    queue.extend((target,depth if re.search(r'[?&]page=|/page/\d+',target) else depth+1) for target in internal if target not in visited and (target not in recent or re.search(r'\.xml$|[?&]page=|/top/|/page/',target)) and target not in {u for u,_ in queue})
                     queue=queue[:500]
                 for candidate in candidates:
                     if candidate['url'] in outbound:continue
