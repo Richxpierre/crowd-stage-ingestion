@@ -167,6 +167,15 @@ def process_pending_events(db: Client, claude: ClaudeClient, limit: int = 10) ->
         LOG.info('Claude enriching event %s (missing: %s)', ev.get('name'), missing)
         html = fetch_page(url)
         if not html:
+            LOG.warning('Destination URL unreachable for %s (%s); archiving event', ev.get('name'), url)
+            meta = ev.get('metadata_report') or {}
+            try:
+                db.request('PATCH', 'events', params={'id': 'eq.' + ev['id']}, json={
+                    'status': 'archived',
+                    'metadata_report': {**meta, 'archive_reason': f'Destination URL unreachable: {url}'}
+                })
+            except Exception as exc:
+                LOG.warning('Failed to archive unreachable event %s: %s', ev['id'], exc)
             continue
 
         text = clean_page_text(html)
@@ -174,7 +183,15 @@ def process_pending_events(db: Client, claude: ClaudeClient, limit: int = 10) ->
             evidence, _ = claude.research_fields(ev.get('name', 'Conference'), url, missing, text)
         except RuntimeError as exc:
             if 'verification_timeout_abandoned' in str(exc):
-                LOG.warning('Claude event verification abandoned for %s: time threshold exceeded', ev.get('name'))
+                LOG.warning('Claude event verification abandoned for %s: time threshold exceeded; archiving', ev.get('name'))
+                meta = ev.get('metadata_report') or {}
+                try:
+                    db.request('PATCH', 'events', params={'id': 'eq.' + ev['id']}, json={
+                        'status': 'archived',
+                        'metadata_report': {**meta, 'archive_reason': 'Claude verification timeout exceeded; cannot validate organizer evidence'}
+                    })
+                except Exception as ex:
+                    LOG.warning('Failed to archive timed out event %s: %s', ev['id'], ex)
                 continue
             raise
 
@@ -230,11 +247,14 @@ def process_pending_events(db: Client, claude: ClaudeClient, limit: int = 10) ->
                             'text': f'Derived from country {c_val}'
                         }
 
-                # Auto-publish if required minimum criteria (format & region) are fulfilled
+                # Auto-publish if required minimum criteria (format & region) are fulfilled; otherwise archive
                 final_format = patch.get('format') or ev.get('format')
                 final_region = patch.get('region') or ev.get('region')
                 if final_format and final_region and final_format in ('in-person', 'hybrid', 'virtual'):
                     patch['status'] = 'published'
+                else:
+                    patch['status'] = 'archived'
+                    existing_evidence['unresolved_reason'] = f'Cannot establish required publication attributes (format={final_format}, region={final_region})'
 
                 patch['metadata_report'] = {**meta, 'evidence': existing_evidence}
                 try:
@@ -243,6 +263,16 @@ def process_pending_events(db: Client, claude: ClaudeClient, limit: int = 10) ->
                     enriched += 1
                 except Exception as exc:
                     LOG.warning('Failed to patch event %s: %s', ev['id'], exc)
+        else:
+            LOG.info('No verifiable evidence found for %s; archiving event', ev.get('name'))
+            meta = ev.get('metadata_report') or {}
+            try:
+                db.request('PATCH', 'events', params={'id': 'eq.' + ev['id']}, json={
+                    'status': 'archived',
+                    'metadata_report': {**meta, 'archive_reason': 'No verifiable conference evidence found by Claude core brain'}
+                })
+            except Exception as exc:
+                LOG.warning('Failed to archive unverified event %s: %s', ev['id'], exc)
 
     return enriched
 
