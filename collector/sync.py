@@ -64,10 +64,10 @@ def preserve_existing_identity(db, source, records):
     return records
 
 
-def sync_one(db, source, selected_passes=None, parse_only=False):
+def sync_one(db, source, selected_passes=None, parse_only=False, run_id=None):
     sid = source['id']
     counts = {'fetched_count':0,'created_count':0,'updated_count':0,'unchanged_count':0,'skipped_count':0}
-    run_id = db.create_run(sid)
+    run_id = run_id or db.create_run(sid)
     report = None
     try:
         if not source.get('is_official_source') or not source.get('ingestion_allowed') or not source.get('permission_reviewed_at') or len(str(source.get('permission_basis') or '').strip()) < 8:
@@ -176,6 +176,13 @@ def main():
     if args.parse_only and not args.slug:parser.error('--parse-only requires a specific --slug')
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
     db = Client()
+    def execute(source, selected=None, preview=False):
+        if os.environ.get('SOURCE_PROCESS_ISOLATION') == '1':
+            from .source_process import run_source
+            remaining = max(1, run_deadline - time.monotonic())
+            return run_source(db, source, selected, preview,
+                              timeout=min(float(os.environ.get('MAX_SOURCE_SECONDS','300')), remaining))
+        return sync_one(db, source, selected, preview)
     # Manual pass requests share the same guarded worker and approval rules.
     # A focused request never enables a paused/unapproved source.
     handled=set()
@@ -188,7 +195,7 @@ def main():
         try:
             selected=db.sources(slug=request['source_slug'])
             if not selected:raise PermissionError('Source is paused or no longer approved')
-            sync_one(db,selected[0],request['pass_types'])
+            execute(selected[0],request['pass_types'])
             db.finish_parse_request(request['id'],'success')
         except Exception as exc:
             db.finish_parse_request(request['id'],'failed',str(exc)[:750])
@@ -200,7 +207,7 @@ def main():
             LOG.warning('Run time budget reached; %d due sources deferred to the next scheduled run',len(sources)-index)
             break
         try:
-            LOG.info('%s %s',s['slug'],json.dumps(sync_one(db,s,parse_only=args.parse_only)))
+            LOG.info('%s %s',s['slug'],json.dumps(execute(s,preview=args.parse_only)))
         except Exception as exc:
             failures += 1
             if not expected_source_error(exc):
@@ -216,4 +223,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
