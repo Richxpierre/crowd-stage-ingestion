@@ -47,3 +47,12 @@ class CleanupTests(unittest.TestCase):
   from collector.source_validation import title_edition_conflict
   self.assertTrue(title_edition_conflict('Security Conference 2026','2027-09-20'))
   self.assertFalse(title_edition_conflict('Conference 2026–2027 edition','2027-03-11'))
+  from collector.discovery import excluded
+  self.assertTrue(excluded('https://callforpaper.org/cfp/a-conference'))
+  self.assertFalse(excluded('https://expfin.org/events/conference'))
+ def test_calendar_and_track_records_do_not_reenter_ingestion(self):
+  from collector.sync import in_scope_record
+  for title in ('MLK Jr. Holiday (University Closed)','Open Registration','Microbusiness Coffee Hour'):
+   self.assertFalse(in_scope_record({'title':title,'start_date':'2027-01-18','event_url':'https://conf.org/events/holiday'},'https://conf.org'))
+  self.assertFalse(in_scope_record({'title':'Staff Engineering Skills','start_date':'2027-01-18','event_url':'https://conf.org/track/staff-skills'},'https://conf.org'))
+  self.assertTrue(in_scope_record({'title':'Cloud Conference 2027','start_date':'2027-01-18','event_url':'https://conf.org'},'https://conf.org'))

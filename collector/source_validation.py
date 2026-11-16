@@ -40,7 +40,7 @@ def bad_page(page):
 
 
 def ancillary_event_url(url):
-    return bool(re.search(r'/(?:sessions?|speakers?|speaking|talks?|agenda|schedule|team-member)(?:/|$)|/veranstaltung-\d+-|[?&](?:session|speaker|talk)(?:id|_id)?=',str(url or ''),re.I))
+    return bool(re.search(r'/(?:sessions?|speakers?|speaking|talks?|tracks?|training|courses?|agenda|schedule|team-member)(?:/|$)|/veranstaltung-\d+-|[?&](?:session|speaker|talk)(?:id|_id)?=',str(url or ''),re.I))
 
 def specific_event_title(title):
     value=re.sub(r'[^\w]+',' ',str(title or '')).strip().casefold()

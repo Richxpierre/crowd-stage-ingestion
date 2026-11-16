@@ -49,6 +49,10 @@ class RecoveryTests(unittest.TestCase):
    process_events(db,Mock(),1,time.monotonic()+100)
   saved=db.request.call_args.kwargs['json']
   self.assertEqual(saved['p_outcome'],'retry');self.assertNotIn('status',saved['p_patch'])
+ def test_admin_resolving_event_during_work_does_not_fail_pipeline(self):
+  db=Mock();db.request.side_effect=[{'id':'job','claim_token':'uuid','event':{'id':'event','name':'Cloud Summit','external_url':'https://conf.org/'}},DatabaseError('Enrichment claim is no longer active')]
+  with patch('collector.claude_worker.configuration',return_value={'can_run':True}),patch('collector.claude_worker.read_page',side_effect=TimeoutError('page timeout')):
+   self.assertEqual(process_events(db,Mock(),1,time.monotonic()+100),0)
  def test_research_selections_keep_correct_payload_shape(self):
   db=Mock();db.request.side_effect=[{'id':'job','claim_token':'uuid','payload':{'stage':'details','fields':['country'],'nodes':[{'id':2}]}},None]
   claude=Mock();claude.select_evidence.return_value=({'selections':[{'field':'country','node_id':2},{'field':'country','node_id':99}]},{})
