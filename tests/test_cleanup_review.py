@@ -4,6 +4,10 @@ from collector.cleanup_review import validate_proposal,deterministic,collect_evi
 from collector.fetch import UnsafeDestination
 
 class CleanupTests(unittest.TestCase):
+ def test_specific_short_brands_remain_valid_but_generic_headings_do_not(self):
+  from collector.source_validation import specific_event_title
+  for title in ('CES','NRF','JAX'):self.assertTrue(specific_event_title(title))
+  for title in ('Conferences','Events','AI'):self.assertFalse(specific_event_title(title))
  def test_unobserved_url_is_rejected(self):
   item={'kind':'validation','url':'https://conf.org'}
   page={'url':item['url'],'text':'Next conference in Berlin','links':[]}

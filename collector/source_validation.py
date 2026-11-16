@@ -47,7 +47,7 @@ def specific_event_title(title):
     if value in {'conference','conferences','event','events','upcoming events','our upcoming events','prossimo evento','event calendar','calendar','home','welcome','tickets','register','registration','visit website','event details'}:return False
     if re.search(r'^(?:the )?next edition|^the (?:next )?conference will|^our upcoming',value):return False
     from .enrichment_values import scope_issue
-    return len(value)>=4 and scope_issue(str(title or '')) is None
+    return len(value)>=3 and scope_issue(str(title or '')) is None
 
 def title_edition_conflict(title,start_date):
     years=set(re.findall(r'(?<!\d)20\d{2}(?!\d)',str(title or '')))
