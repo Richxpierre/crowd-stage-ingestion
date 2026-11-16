@@ -39,3 +39,20 @@ class CleanupTests(unittest.TestCase):
   self.assertTrue(plan['parse_passes']['event_date']['require_verified'])
  def test_multiple_event_headings_cannot_receive_one_shared_recipe(self):
   self.assertIsNone(reviewed_plan({'action':'recheck','url':'https://conf.org/','title':'Cloud Conference 2027','facts':[]},{'url':'https://conf.org/','headings':['One','Two'],'text':'Cloud Conference 2027'}))
+ def test_generic_calendar_and_meetup_titles_are_not_conferences(self):
+  from collector.source_validation import specific_event_title
+  for title in ('Conferences','Our Upcoming Events','Prossimo evento','Weekly cloud meetup','The next edition of the conference will take place in May 2027'):
+   self.assertFalse(specific_event_title(title),title)
+  self.assertTrue(specific_event_title('Cloud Conference 2027 with workshops'))
+  from collector.source_validation import title_edition_conflict
+  self.assertTrue(title_edition_conflict('Security Conference 2026','2027-09-20'))
+  self.assertFalse(title_edition_conflict('Conference 2026–2027 edition','2027-03-11'))
+  from collector.discovery import excluded
+  self.assertTrue(excluded('https://callforpaper.org/cfp/a-conference'))
+  self.assertFalse(excluded('https://expfin.org/events/conference'))
+ def test_calendar_and_track_records_do_not_reenter_ingestion(self):
+  from collector.sync import in_scope_record
+  for title in ('MLK Jr. Holiday (University Closed)','Open Registration','Microbusiness Coffee Hour'):
+   self.assertFalse(in_scope_record({'title':title,'start_date':'2027-01-18','event_url':'https://conf.org/events/holiday'},'https://conf.org'))
+  self.assertFalse(in_scope_record({'title':'Staff Engineering Skills','start_date':'2027-01-18','event_url':'https://conf.org/track/staff-skills'},'https://conf.org'))
+  self.assertTrue(in_scope_record({'title':'Cloud Conference 2027','start_date':'2027-01-18','event_url':'https://conf.org'},'https://conf.org'))

@@ -88,6 +88,9 @@ def process_events(db,claude,limit,deadline):
         job=db.request('POST','rpc/claim_conference_event_enrichment',json={})
         if not job:break
         event=job['event'];patch={};report={};error=None;outcome='completed';fatal=False
+        if event.get('status') not in (None,'pending_review'):
+            db.request('PATCH','conference_event_enrichment_jobs',params={'id':'eq.'+job['id'],'claim_token':'eq.'+job['claim_token']},json={'status':'completed','claim_token':None,'lease_until':None,'last_error':None,'report':{'resolution':'Event already resolved by an administrator'}})
+            continue
         try:
             issue=scope_issue(event['name'])
             if issue:
@@ -118,7 +121,12 @@ def process_events(db,claude,limit,deadline):
         except Exception as exc:
             outcome='retry';error=str(exc)[:500];fatal=retryable_provider(exc)
             report={'reason':'Page or enrichment temporarily unavailable; event preserved in Pending Review'}
-        result=db.request('POST','rpc/finish_conference_event_enrichment',json={'p_id':job['id'],'p_claim':job['claim_token'],'p_patch':patch,'p_report':report,'p_outcome':outcome,'p_error':error})
+        try:
+            result=db.request('POST','rpc/finish_conference_event_enrichment',json={'p_id':job['id'],'p_claim':job['claim_token'],'p_patch':patch,'p_report':report,'p_outcome':outcome,'p_error':error})
+        except DatabaseError as exc:
+            if 'Enrichment claim is no longer active' in str(exc) or 'Enrichment lease expired' in str(exc):
+                LOG.info('Event changed or its claim expired during work; preserving the current admin decision');continue
+            raise
         LOG.info('Event %s: %s',event['id'],json.dumps(result))
         if outcome=='completed':count+=1
         if fatal:raise RuntimeError(error)
@@ -142,4 +150,3 @@ def main():
     finally:claude.close()
 
 if __name__=='__main__':main()
-

@@ -22,6 +22,10 @@ INSTRUCTIONS=('Review this conference ingestion record using only supplied evide
 def norm(text):return re.sub(r'\s+',' ',str(text or '')).strip().casefold()
 def deterministic(item):
  state=item['before_state']
+ from .enrichment_values import scope_issue
+ issue=scope_issue(item.get('title') or '')
+ if item['kind']=='event' and issue and 'Calendar administration' in issue:
+  return {'action':'archive','reason':issue+'. Preserve the original record and Source evidence.','quote':item['title'],'url':item['url'],'title':item['title'],'method':'explicit_calendar_activity_scope'}
  if item['kind']=='event' and state.get('end_date') and state['end_date']<date.today().isoformat():
   return {'action':'archive','reason':'The stored event edition has ended; preserve its history and exclude it from the publication backlog.','quote':state['end_date'],'url':item['url'],'title':item.get('title',''),'method':'stored_edition_dates'}
  return None
@@ -36,7 +40,10 @@ def page_evidence(url,rendered=None):
  links=[]
  for a in soup.select('a[href]'):
   target=urljoin(actual,a['href']);label=a.get_text(' ',strip=True)
-  if urlsplit(target).hostname==urlsplit(actual).hostname and re.search(r'conference|summit|expo|2027|2028|upcoming|next edition',label+' '+target,re.I):links.append({'url':target,'label':label[:100]})
+  internal=urlsplit(target).hostname==urlsplit(actual).hostname
+  official=bool(re.match(r'^(?:visit\s+(?:the\s+)?)?(?:official\s+)?(?:conference|event|website|site)(?:\s+website)?\s*$',label,re.I))
+  from .discovery import excluded
+  if target.startswith('https://') and not excluded(target) and ((internal and re.search(r'conference|summit|expo|2027|2028|upcoming|next edition',label+' '+target,re.I)) or official):links.append({'url':target,'label':label[:100],'kind':'internal' if internal else 'official_website_button'})
  for node in soup.select('script,style,nav,footer,header,aside,noscript,svg'):node.decompose()
  text=soup.get_text(' ',strip=True)
  if re.search(r'just a moment|verify (?:you are|that you are) human|checking your browser|access denied|captcha',text[:2000],re.I):raise PermissionError('Access challenge; not evidence that the conference is invalid')
@@ -88,6 +95,8 @@ def reviewed_plan(proposal,page):
  from .enrichment_values import normalize_evidence
  from .parse_passes import FIELDS,PASS_TYPES
  title=proposal['title']
+ from .source_validation import specific_event_title
+ if not specific_event_title(title):return None
  if not EVENT_WORD.search(title) or norm(title) not in norm(page['text']):return None
  fields={};quotes=[];rows=[]
  for fact in proposal.get('facts',[]):
@@ -97,6 +106,8 @@ def reviewed_plan(proposal,page):
    if parsed:fields[fact['field']]=parsed;quotes.append(fact['quote'])
   else:rows.append({**fact,'page_url':page['url'],'event_title':title})
  if not fields.get('start_date') or not fields.get('end_date') or fields['start_date']>fields['end_date'] or fields['end_date']<date.today().isoformat():return None
+ from .source_validation import title_edition_conflict
+ if title_edition_conflict(title,fields['start_date']):return None
  extra,proof,warnings=normalize_evidence(rows,page['text'],title,page['url'],{})
  fields.update({k:v for k,v in extra.items() if k!='industry_research'})
  if extra.get('industry_research'):fields['categories']=[extra['industry_research']]

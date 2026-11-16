@@ -52,6 +52,7 @@ def normalize_evidence(rows,text,title,url,known):
     return fields,evidence,warnings
 
 def scope_issue(title):
+    if re.search(r'university (?:closed|closure|reopens)|academic calendar|\blast day (?:to|for)\b|commencement|graduation application|faculty and staff.*party|christmas (?:party|break|tree)|\bMLK\b|coffee hour|\(in person session\)|^open registration$|^registration$|deadline to submit',title,re.I):return 'Calendar administration, holiday or individual activity; not a standalone conference'
     if re.search(r'conference|congress|convention|summit|expo|exhibition|trade[ -]show',title,re.I):return None
     if re.search(r'webinar|meetup|workshop|bootcamp|training course|hackathon|breakout session',title,re.I):return 'Possible out-of-scope listing; editorial review required'
     return None

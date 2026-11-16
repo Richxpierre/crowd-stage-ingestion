@@ -41,8 +41,16 @@ def next_check(source, hours_override=None):
 
 
 def is_directory_target(url):
+    from .discovery import excluded
     host = (urlsplit(url).hostname or '').lower().removeprefix('www.')
-    return any(host == blocked or host.endswith('.' + blocked) for blocked in BLOCKED_DIRECTORY_HOSTS)
+    return excluded(url) or any(host == blocked or host.endswith('.' + blocked) for blocked in BLOCKED_DIRECTORY_HOSTS)
+
+def in_scope_record(record,source_url):
+    from .source_validation import specific_event_title,title_edition_conflict,ancillary_event_url
+    from .parse_passes import canonical_page
+    if not specific_event_title(record.get('title')) or title_edition_conflict(record.get('title'),record.get('start_date')):return False
+    target=record.get('event_url') or source_url
+    return not (ancillary_event_url(target) and canonical_page(target)!=canonical_page(source_url))
 
 
 def preserve_existing_identity(db, source, records):
@@ -120,6 +128,12 @@ def sync_one(db, source, selected_passes=None, parse_only=False, run_id=None):
         current_records = [r for r in records if r['end_date'] >= current_date or r.get('status') == 'cancelled']
         counts['skipped_count'] = len(records) - len(current_records)
         records = current_records
+        excluded_scope=[r for r in records if r.get('status')!='cancelled' and not in_scope_record(r,source['url'])]
+        if excluded_scope:
+            report['scope_exclusions']=[{'title':r.get('title'),'url':r.get('event_url')} for r in excluded_scope[:20]]
+            records=[r for r in records if r not in excluded_scope]
+            counts['skipped_count']+=len(excluded_scope)
+            if not records:raise ValueError('No standalone conferences remain after excluding calendar administration, sessions and unsupported edition labels')
         if source['kind'] != 'auto' and not recovered:
             fetcher.deadline=min(getattr(fetcher,'deadline',None) or float('inf'),time.monotonic()+60)
             records=enrich_missing_images(fetcher,source,records)
