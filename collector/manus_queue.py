@@ -7,7 +7,8 @@ from .client import Client
 from .manus_backup import ManusClient,ManusError,configured,prepare_task,validate_selection
 
 def enqueue(payload,db=None):
-    if not configured():raise ManusError('manus_disabled')
+    from .claude_client import configured as claude_configured
+    if not configured() and not claude_configured():raise ManusError('manus_disabled')
     prepare_task(payload)  # Reject unusable excerpts before creating a queue row.
     key=hashlib.sha256(('manus-mini-v2|'+json.dumps(payload,sort_keys=True)).encode()).hexdigest()
     row=(db or Client()).request('POST','rpc/queue_manus_enrichment',json={'p_fingerprint':key,'p_payload':payload})
@@ -59,7 +60,15 @@ def reconcile(db,client,job):
                 patch(db,job,{'reason':'manus_verifying_citations'})
                 import asyncio
                 from .manus_research import verify
-                result=asyncio.run(verify(result,job['payload']))
+                try:
+                    async def bounded_verify():return await asyncio.wait_for(verify(result,job['payload']),timeout=45)
+                    result=asyncio.run(bounded_verify())
+                except Exception as exc:
+                    # Keep the existing task and its proposal for inspection;
+                    # never create another paid task to repeat failed verification.
+                    patch(db,job,{'status':'review','result':{'proposed_evidence':result.get('evidence',[]),'evidence':[]},
+                        'reason':'manus_citation_verification_failed: '+str(exc)[:350],'completed_at':datetime.now(timezone.utc).isoformat()})
+                    return 'review'
             patch(db,job,{'status':'completed','result':result,'completed_at':datetime.now(timezone.utc).isoformat(),'reason':None})
             if job['payload'].get('stage')!='research' or result.get('evidence'):wake_consumers(db,job)
             else:patch(db,job,{'reason':'manus_no_supported_evidence'})

@@ -89,7 +89,6 @@ async def verify(value,payload,reader=None):
 def research_job(source,pages,results=None,db=None,enqueue_missing=True):
     """One deduplicated mini investigation per organizer/edition/month, never per pass."""
     from .manus_backup import configured
-    if not configured():return None
     from .client import Client
     from .manus_queue import enqueue
     db=db or Client()
@@ -98,6 +97,8 @@ def research_job(source,pages,results=None,db=None,enqueue_missing=True):
         'order':'completed_at.desc','limit':'1'})
     if rows:return rows[0]
     if not enqueue_missing:return None
+    from .claude_client import configured as claude_configured
+    if not configured() and not claude_configured():return None
     present={f for item in (results or {}).values() for r in item.get('results',[]) for f,v in r['fields'].items() if v not in (None,'',[],'unknown')}
     missing=[f for f in ('start_date','end_date','country','format','event_kind') if f not in present]
     title=source.get('name','');known={}
