@@ -291,6 +291,17 @@ def extract_pass(kind, pages, source, config, on_page=None, snapshot_cache=None)
         if on_page:on_page()
     return results
 
+def crawl_page_fallback(url, source, deadline):
+    """Reuse validation's bounded public browser for an already approved Source."""
+    import asyncio
+    from .crawler_reader import Crawl4AIReader
+    async def read():
+        async with Crawl4AIReader('CrowdStage-Source-Refresh/1.0',deadline=deadline,skip_robots_for=source['url']) as reader:
+            result=await reader.read(url)
+            return result['html'].encode('utf-8')
+    return asyncio.run(asyncio.wait_for(read(),timeout=max(1,deadline-time.monotonic())))
+
+
 def collect_passes(fetcher, source, selected=None, on_result=None):
     from .mini_enrichment import MiniEnricher,enrich_pass
     ai=MiniEnricher((source.get('discovery_report') or {}).get('ai_enrichment') or (source.get('selectors') or {}).get('ai_enrichment'))
@@ -298,7 +309,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
     if any(p not in PASS_TYPES for p in selected): raise ValueError('Unknown parse pass')
     options=(source.get('selectors') or {}).get('parse_passes') or {}
     reviewed_only=all((options.get(kind) or {}).get('reviewed_only') or (options.get(kind) or {}).get('enabled',True) is False for kind in selected)
-    pages={}; errors={}; report={}; started=now();rendered_count=0;stop_fetching=False
+    pages={}; errors={}; report={}; started=now();rendered_count=0;stop_fetching=False;browser_fallbacks=[]
     root=clean_url(source['url'])
     if not root: raise ValueError('Source must be HTTPS')
     fetcher.deadline=time.monotonic()+150
@@ -332,8 +343,20 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
         except Exception as exc:
             errors[url]=str(exc)[:500]
             from .fetch import UnsafeDestination
-            if isinstance(exc,UnsafeDestination) or getattr(getattr(exc,'response',None),'status_code',None)==429:
+            status=getattr(getattr(exc,'response',None),'status_code',None)
+            if isinstance(exc,UnsafeDestination) or status==429:
                 stop_fetching=True
+            elif (source.get('ingestion_allowed') is True and source.get('is_official_source') is True
+                  and (source.get('selectors') or {}).get('browser_fallback') is True
+                  and len(browser_fallbacks)<2 and time.monotonic()<fetcher.deadline-15
+                  and (status==403 or isinstance(exc,PermissionError) or 'robots' in str(exc).lower())):
+                attempt={'url':url,'http_error':str(exc)[:300]};browser_fallbacks.append(attempt)
+                try:
+                    pages[url]=crawl_page_fallback(url,source,min(fetcher.deadline,time.monotonic()+50))
+                    errors.pop(url,None);attempt['status']='loaded'
+                except Exception as fallback_error:
+                    attempt.update(status='failed',error=str(fallback_error)[:300])
+                    errors[url]+='; browser fallback: '+str(fallback_error)[:250]
         publish_collection()
     from .manus_research import research_job,add_results as add_research
     research=None
@@ -390,7 +413,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
         if not research and not reviewed_only:research=research_job(source,pages,report)
         if research:ai.audit['research']={k:research.get(k) for k in ('id','status','reason')}
     except Exception:ai.audit['research']={'status':'unavailable'}
-    return report,dict(mode='four_pass',started_at=started,pages=list(pages),pages_checked=len(pages),
+    return report,dict(mode='four_pass',started_at=started,pages=list(pages),pages_checked=len(pages),browser_fallbacks=browser_fallbacks,
                        errors=[{'url':u,'message':m} for u,m in errors.items()],parse_passes=report,ai_enrichment=ai.audit)
 
 def assemble(report, source):
