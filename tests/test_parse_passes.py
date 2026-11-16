@@ -72,6 +72,19 @@ class ParsePassTests(unittest.TestCase):
         report,_=collect_passes(Blocked(),SOURCE)
         self.assertTrue(all(r['status']=='failed' for r in report.values()))
 
+    def test_configured_pages_already_discovered_are_promoted_ahead_of_blog_links(self):
+        west=URL+'west';east=URL+'east';blogs=[URL+'blog/one',URL+'blog/two']
+        class Pages(Fetcher):
+            def fetch(self,url):
+                self.calls.append(url)
+                return 200,(b'<h1>Conference catalog</h1>' if url==URL else page(node(name='West Conference' if url==west else 'East Conference',url=url,startDate='2027-04-26'))),{}
+        source={**SOURCE,'selectors':{'max_pages':3,'render':False,'parse_passes':{'event_date':{'page_urls':[west,east]}}}}
+        fetcher=Pages(b'')
+        with patch('collector.parse_passes.discover_links',return_value=blogs+[west,east]):
+            report,_=collect_passes(fetcher,source)
+        self.assertEqual(fetcher.calls,[URL,west,east])
+        self.assertEqual(len(report['event_date']['results']),2)
+
     def test_approved_source_uses_one_shared_browser_snapshot_after_access_failure(self):
         class Blocked:
             def fetch(self,url):raise PermissionError('403 access denied')
