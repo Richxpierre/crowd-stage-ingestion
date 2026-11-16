@@ -72,6 +72,29 @@ class ParsePassTests(unittest.TestCase):
         report,_=collect_passes(Blocked(),SOURCE)
         self.assertTrue(all(r['status']=='failed' for r in report.values()))
 
+    def test_approved_source_uses_one_shared_browser_snapshot_after_access_failure(self):
+        class Blocked:
+            def fetch(self,url):raise PermissionError('403 access denied')
+        source={**SOURCE,'ingestion_allowed':True,'selectors':{**SOURCE['selectors'],'browser_fallback':True,'max_pages':1}}
+        with patch('collector.parse_passes.crawl_page_fallback',return_value=page(node(startDate='2027-04-26'))) as fallback:
+            report,audit=collect_passes(Blocked(),source)
+        fallback.assert_called_once()
+        self.assertEqual(assemble(report,source)[0]['start_date'],'2027-04-26')
+        self.assertEqual(audit['browser_fallbacks'][0]['status'],'loaded')
+        self.assertEqual(audit['errors'],[])
+
+    def test_browser_fallback_cannot_override_unsafe_destinations_or_rate_limits(self):
+        from collector.fetch import UnsafeDestination
+        from requests import HTTPError,Response
+        response=Response();response.status_code=429
+        source={**SOURCE,'ingestion_allowed':True,'selectors':{**SOURCE['selectors'],'browser_fallback':True,'max_pages':1}}
+        for error in [UnsafeDestination('private host'),HTTPError('rate limited',response=response)]:
+            class Blocked:
+                def fetch(self,url):raise error
+            with patch('collector.parse_passes.crawl_page_fallback') as fallback:
+                collect_passes(Blocked(),source)
+            fallback.assert_not_called()
+
     def test_html_details_without_date(self):
         results=extract_pass('event_details', {URL:b'<h1>Cloud Conference</h1><meta name="description" content="All about cloud"><meta name="keywords" content="cloud, infrastructure">'},SOURCE,{})
         self.assertEqual(results[0]['fields']['categories'],['cloud','infrastructure'])
