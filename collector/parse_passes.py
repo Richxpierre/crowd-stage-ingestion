@@ -372,11 +372,15 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
     if research:
         for row in (research.get('result') or {}).get('evidence',[]):
             if row['page_url'] not in queue:queue.insert(0,row['page_url'])
+    configured=[]
     for kind in selected:
         cfg=options.get(kind) or {}
         for url in cfg.get('page_urls') or []:
             target=clean_url(url)
-            if target and target not in queue:queue.insert(0,target)
+            if target and target not in configured:configured.append(target)
+    # A configured venue/edition page must not lose its budget to blog links
+    # merely because discovery had already placed it later in the queue.
+    queue=configured+[url for url in queue if url not in configured]
     while queue and not stop_fetching and len(set(pages)|set(errors))<max_pages:
         url=queue.pop(0)
         if url in pages or url in errors:continue
