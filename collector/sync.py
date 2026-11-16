@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 from .client import Client
+from .pipeline_control import configuration
 from .fetch import Fetcher
 from .parsers import _finish, clean_url
 from .images import enrich_missing_images
@@ -109,7 +110,7 @@ def sync_one(db, source, selected_passes=None, parse_only=False, run_id=None):
             records,code,headers,report=collect_source(fetcher,source)
         if code == 304:
             db.update_source(sid, {'last_success_at':utc_now(),'last_attempt_at':utc_now(),
-                                   'last_error':None,'next_check_at':next_check(source)})
+                                   'last_error':None,'next_check_at':next_check(source),'retry_failures':0,'review_hold':False})
             db.update_run(run_id, {'status':'unchanged','completed_at':utc_now(),'http_status':304})
             return counts
         recovered=report.get('mode')=='website_fallback'
@@ -152,7 +153,7 @@ def sync_one(db, source, selected_passes=None, parse_only=False, run_id=None):
         db.update_source(sid, {'etag':headers.get('ETag'), 'last_modified':headers.get('Last-Modified'),
                               'discovery_report':image_report,
                               'last_success_at':utc_now(), 'last_attempt_at':utc_now(),
-                              'next_check_at':next_check(source,6 if recovered else None),'last_error':None})
+                              'next_check_at':next_check(source,6 if recovered else None),'last_error':None,'retry_failures':0,'review_hold':False})
         if recovered:
             LOG.warning('Source %s recovered with automatic website discovery at %s; primary feed/page will be retried',source.get('slug'),report['fallback_url'])
         db.update_run(run_id, {**counts, 'status':'success' if records else 'unchanged','http_status':code,'completed_at':utc_now()})
@@ -161,6 +162,10 @@ def sync_one(db, source, selected_passes=None, parse_only=False, run_id=None):
         LOG.exception('Source %s failed',source.get('slug'))
         db.update_run(run_id,{**counts,'status':'failed','completed_at':utc_now(),'error_message':str(exc)[:750]})
         failed={'last_attempt_at':utc_now(), 'last_error':str(exc)[:750],'next_check_at':next_check(source,6)}
+        if isinstance(db,Client):
+            from .client import DatabaseError
+            db.source_failure(sid,str(exc)[:750],not isinstance(exc,DatabaseError))
+            failed.pop('next_check_at',None)
         failure_report=getattr(exc,'report',None) or report
         if failure_report is not None:failed['discovery_report']=failure_report
         db.update_source(sid,failed)
@@ -176,7 +181,15 @@ def main():
     if args.parse_only and not args.slug:parser.error('--parse-only requires a specific --slug')
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
     db = Client()
+    controls=configuration(db,'parsing')
+    if not controls['can_run']:
+        LOG.info('Parsing is paused by admin control; no sources claimed');return
+    args.limit_sources=min(args.limit_sources,int(controls['batch_size']))
+    os.environ['MAX_SOURCE_SECONDS']=str(controls['item_timeout_seconds'])
     def execute(source, selected=None, preview=False):
+        current=configuration(db,'parsing')
+        if not current['can_run']:raise KeyboardInterrupt('Parsing paused by administrator')
+        os.environ['MAX_SOURCE_SECONDS']=str(current['item_timeout_seconds'])
         if os.environ.get('SOURCE_PROCESS_ISOLATION') == '1':
             from .source_process import run_source
             remaining = max(1, run_deadline - time.monotonic())
@@ -223,5 +236,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-
 

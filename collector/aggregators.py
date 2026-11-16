@@ -77,7 +77,7 @@ def extract(page,adapter,seed):
                 from .automatic import EVENT_WORD
                 headings=soup.select('h1')
                 title=headings[0].get_text(' ',strip=True) if len(headings)==1 else ''
-                if EVENT_WORD.search(title) and len(soup.get_text(' ',strip=True))>150:
+                if len(title)>=4 and len(soup.get_text(' ',strip=True))>150:
                     raise NoOrganizerLink(title[:240])
                 raise ValueError('Conference Monkey detail has no explicit website button')
         else:

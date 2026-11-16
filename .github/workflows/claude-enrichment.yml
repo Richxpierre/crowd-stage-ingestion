@@ -26,7 +26,27 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r requirements.txt
+      - name: Check admin control before browser setup
+        id: pending
+        run: |
+          python - <<'PY'
+          import os
+          from collector.client import Client
+          from collector.pipeline_control import configuration
+          active=configuration(Client(),'claude')['can_run']
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out: out.write('active='+str(active).lower()+'\n')
+          PY
+      - if: steps.pending.outputs.active == 'true'
+        run: pip install -r requirements-crawler.txt
+      - if: steps.pending.outputs.active == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: chromium-${{ runner.os }}-${{ hashFiles('requirements.txt', 'requirements-crawler.txt') }}
+      - if: steps.pending.outputs.active == 'true'
+        run: python -m playwright install --with-deps chromium
       - name: Run Claude Core Brain Worker with Live Token Tracking
+        if: steps.pending.outputs.active == 'true'
         run: python -m collector.claude_worker
       - name: Publish readiness and live token tracking
         if: always()

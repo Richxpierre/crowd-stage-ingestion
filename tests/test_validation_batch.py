@@ -4,6 +4,9 @@ from unittest.mock import AsyncMock,MagicMock,patch
 from collector.source_validation import run
 
 class ValidationBatchTests(unittest.TestCase):
+ def setUp(self):
+  control=patch('collector.pipeline_control.configuration',return_value={'can_run':True,'batch_size':50,'item_timeout_seconds':180})
+  control.start();self.addCleanup(control.stop)
  def test_batch_reuses_browser_and_finishes_each_claim(self):
   rows=[{'id':'one','url':'https://one.example.org','claim_token':'a'},
         {'id':'two','url':'https://two.example.org','claim_token':'b'},None]

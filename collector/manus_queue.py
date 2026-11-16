@@ -73,7 +73,7 @@ def reconcile(db,client,job):
 
 def tick(db,client):
     if not configured():return {'reason':'manus_disabled'}
-    active=db.request('GET','conference_manus_jobs',params={'status':'eq.running','select':'*','order':'started_at','limit':'1'})
+    active=db.request('GET','conference_manus_jobs',params={'status':'eq.running','task_id':'not.is.null','select':'*','order':'started_at','limit':'1'})
     if active:
         try:return {'reason':reconcile(db,client,active[0]),'id':active[0]['id']}
         except ManusError as exc:
@@ -104,10 +104,21 @@ def settle_finished(db,client):
         patch(db,job,{'credits_used':state['credits_used'],'checked_at':datetime.now(timezone.utc).isoformat()})
 
 def main():
-    db=Client();client=ManusClient();deadline=time.monotonic()+150
+    db=Client()
+    from .pipeline_control import configuration
+    controls=configuration(db,'enrichment')
+    if not controls['can_run']:
+        print(json.dumps({'reason':'manus_paused_by_admin'}));return
+    client=ManusClient();deadline=time.monotonic()+150
     try:
         settle_finished(db,client)
         while time.monotonic()<deadline:
+            controls=configuration(db,'enrichment')
+            if not controls['can_run']:break
+            if not controls.get('manus_new_tasks'):
+                active=db.request('GET','conference_manus_jobs',params={'status':'eq.running','task_id':'not.is.null','select':'*','limit':'1'})
+                if active:reconcile(db,client,active[0])
+                print(json.dumps({'reason':'reconciliation_only_no_new_tasks'}));break
             result=tick(db,client);print(json.dumps(result))
             if result['reason'] not in ('manus_pending','pending'):break
             time.sleep(5)

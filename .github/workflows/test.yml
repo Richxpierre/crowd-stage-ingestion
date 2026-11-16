@@ -24,7 +24,6 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
       MANUS_BACKUP_ENABLED: '1'
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       AI_ENRICHMENT_ENABLED: '0'
     steps:
       - uses: actions/checkout@v4
@@ -49,8 +48,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          AI_ENRICHMENT_ENABLED: ${{ vars.AI_ENRICHMENT_ENABLED }}
+          AI_ENRICHMENT_ENABLED: '0'
           MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
           MANUS_BACKUP_ENABLED: ${{ vars.MANUS_BACKUP_ENABLED }}
   manus-readiness:
@@ -67,8 +65,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          AI_ENRICHMENT_ENABLED: ${{ vars.AI_ENRICHMENT_ENABLED }}
+          AI_ENRICHMENT_ENABLED: '0'
           MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
           MANUS_BACKUP_ENABLED: ${{ vars.MANUS_BACKUP_ENABLED }}
   ai-mini-enrichment-probe:
@@ -86,8 +83,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m scripts.probe_mini_enrichment
         env:
-          AI_ENRICHMENT_ENABLED: '1'
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AI_ENRICHMENT_ENABLED: '0'
           OPENAI_CRAWLER_MODEL: ${{ vars.OPENAI_CRAWLER_MODEL }}
       - uses: actions/upload-artifact@v4
         if: always()

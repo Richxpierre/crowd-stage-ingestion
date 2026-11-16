@@ -28,7 +28,7 @@ def http_status(exc):
     return int(match[1]) if match else None
 
 def bad_page(page):
-    soup=BeautifulSoup(page.get('html',''),'html.parser')
+    soup=BeautifulSoup(page.get('html') or '','html.parser')
     title=' '.join(n.get_text(' ',strip=True) for n in soup.select('title,h1'))
     text=soup.get_text(' ',strip=True)[:2000]
     if re.search(r'page not found|404 not found|access denied|just a moment|verify you are human|domain (?:is )?for sale|website (?:is )?parked',title+' '+text[:500],re.I):return True
@@ -36,11 +36,11 @@ def bad_page(page):
         for node in soup.select('script,style,noscript,#blazor-error-ui,[hidden],[aria-hidden="true"]'):node.decompose()
         content=(soup.body or soup).get_text(' ',strip=True)
         if len(content)<80:return True
-    return len(text.strip())<30 and not list(event_nodes(page.get('html','').encode()))
+    return len(text.strip())<30 and not list(event_nodes((page.get('html') or '').encode()))
 
 
 def ancillary_event_url(url):
-    return bool(re.search(r'/(?:sessions?|speakers?|speaking|talks?|agenda|schedule|team-member)(?:/|$)|/veranstaltung-\d+-|[?&](?:session|speaker|talk)(?:id|_id)?=',url,re.I))
+    return bool(re.search(r'/(?:sessions?|speakers?|speaking|talks?|agenda|schedule|team-member)(?:/|$)|/veranstaltung-\d+-|[?&](?:session|speaker|talk)(?:id|_id)?=',str(url or ''),re.I))
 
 
 def unrelated_page_event(page,records):
@@ -53,7 +53,7 @@ def unrelated_page_event(page,records):
     for record in records:
         target=record.get('event_url') or page['url']
         if clean_url(target).rstrip('/')==clean_url(page['url']).rstrip('/') or not same_owner(target,page['url']):return None
-        title_tokens=set(re.findall(r'[^\W\d_]{3,}',record.get('title','').casefold()))-{'conference','event','the','and','online'}
+        title_tokens=set(re.findall(r'[^\W\d_]{3,}',str(record.get('title') or '').casefold()))-{'conference','event','the','and','online'}
         if not title_tokens or heading_tokens & title_tokens:return None
         targets.add(target)
     return next(iter(targets)) if len(targets)==1 else None
@@ -142,6 +142,7 @@ async def _validate_site(candidate,reader,search):
     async def read(url):
         try:
             page=await reader.read(url)
+            if not isinstance(page.get('html'),str):raise ValueError('Website returned no usable page markup')
             if bad_page(page):
                 if re.search(r'404|page not found',page.get('html','')[:2000],re.I):raise RuntimeError('HTTP 404: page-not-found content')
                 if re.search(r'domain (?:is )?for sale|website (?:is )?parked',page.get('html','')[:2000],re.I):raise ValueError('Domain is parked or for sale')
@@ -333,13 +334,18 @@ def worker_failure(candidate,exc):
 async def run(limit=5,validation_id=None,dry_run=False):
     from .client import Client
     db=Client()
+    from .pipeline_control import configuration
+    controls=configuration(db,'validation')
+    if not controls['can_run']:return
+    limit=min(limit,controls['batch_size'])
     worker_deadline=time.monotonic()+max(180,min(int(os.environ.get('VALIDATION_BATCH_SECONDS','600')),900))
     async with Crawl4AIReader(os.environ.get('COLLECTOR_USER_AGENT',''),deadline=worker_deadline) as reader:
       for _ in range(max(1,min(limit,50))):
+        if not configuration(db,'validation')['can_run']:break
         if time.monotonic()>=worker_deadline-15:break
         candidate=db.request('POST','rpc/claim_conference_source_validation',json={'p_id':validation_id})
         if not candidate:break
-        deadline=min(worker_deadline,time.monotonic()+180)
+        deadline=min(worker_deadline,time.monotonic()+min(180,controls['item_timeout_seconds']))
         reader.deadline=deadline
         try:
             try:search=SearXNG(deadline=deadline)
