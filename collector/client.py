@@ -42,6 +42,7 @@ class Client:
             params['slug'] = 'eq.' + slug  # manual runs can force a not-yet-due source
         else:
             params['next_check_at'] = 'lte.' + datetime.now(timezone.utc).isoformat()
+            params['review_hold'] = 'eq.false'
         return self.request('GET', 'conference_sources', params=params)
 
     def create_run(self, source_id):
@@ -64,6 +65,9 @@ class Client:
 
     def update_source(self, source_id, record):
         self.request('PATCH', 'conference_sources', params={'id':'eq.'+source_id}, json=record)
+
+    def source_failure(self, source_id, error, source_error=True):
+        self.request('POST','rpc/record_conference_source_failure',json={'p_source_id':source_id,'p_error':error,'p_source_error':source_error})
 
     def ingest(self, source_id, records):
         return self.request('POST', 'rpc/ingest_crowdstage_conference_batch', json={
@@ -156,5 +160,4 @@ class Client:
         if not rows:return False
         return bool(self.request('PATCH','conference_crawl_jobs',params={'id':'eq.'+job_id,'status':'eq.queued'},
             json={'config':{**rows[0]['config'],'bulk_worker_handoffs':count}},headers={'Prefer':'return=representation'}))
-
 

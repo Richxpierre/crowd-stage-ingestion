@@ -237,7 +237,15 @@ def main():
     args=parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     if args.job_file and args.job_id:parser.error('--job-id cannot be combined with --job-file')
-    db=Client();job=json.loads(Path(args.job_file).read_text(encoding='utf-8')) if args.job_file else db.claim_crawl_job(args.job_id)
+    db=Client()
+    from .pipeline_control import configuration
+    controls=configuration(db,'discovery')
+    if not controls['can_run']:
+        LOG.info('Discovery is paused by admin control')
+        if args.claim_only and os.environ.get('GITHUB_OUTPUT'):
+            with open(os.environ['GITHUB_OUTPUT'],'a') as output:output.write('has_job=false\n')
+        return
+    job=json.loads(Path(args.job_file).read_text(encoding='utf-8')) if args.job_file else db.claim_crawl_job(args.job_id)
     if args.claim_only:
         if job and job.get('id'):Path(args.claim_only).write_text(json.dumps(job,ensure_ascii=True),encoding='utf-8')
         if os.environ.get('GITHUB_OUTPUT'):
@@ -248,6 +256,9 @@ def main():
     try:
         worker_deadline=time.monotonic()+600
         while True:
+            if not configuration(db,'discovery')['can_run']:
+                db.update_crawl_job(job['id'],{'status':'queued','summary':'Paused by admin; saved continuation retained'});break
+            job['config']['max_pages']=min(int(job['config'].get('max_pages',50)),controls['batch_size'])
             bulk=not job['config'].get('setup_only') and job['config'].get('settings',{}).get('adapter') in ('sessionize','conference_monkey')
             if args.drain_bulk and bulk:job['config']['bulk_batch_seconds']=max(1,min(180,worker_deadline-time.monotonic()))
             result=asyncio.run(run_job(db,job));LOG.info('Discovery result: %s',result)

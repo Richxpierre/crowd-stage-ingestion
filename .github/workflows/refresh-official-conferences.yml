@@ -30,9 +30,8 @@ jobs:
       METADATA_ENRICHMENT: '1'
       SEARXNG_URL: http://127.0.0.1:8888
       COLLECTOR_USER_AGENT: ${{ vars.COLLECTOR_USER_AGENT }}
-      AI_ENRICHMENT_ENABLED: ${{ vars.AI_ENRICHMENT_ENABLED }}
+      AI_ENRICHMENT_ENABLED: '0'
       OPENAI_CRAWLER_MODEL: ${{ vars.OPENAI_CRAWLER_MODEL }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       MANUS_BACKUP_ENABLED: ${{ vars.MANUS_BACKUP_ENABLED }}
       MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -141,4 +140,3 @@ jobs:
         run: python -m collector.source_process
       - if: always() && steps.precheck.outputs.has_work == 'true'
         run: docker rm -f crowdstage-search || true
-
