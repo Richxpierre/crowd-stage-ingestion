@@ -75,9 +75,9 @@ def process_research(db,claude,limit,deadline):
         except Exception as exc:
             error=str(exc)[:500];LOG.warning('Research job did not finish: %s',error)
         db.request('POST','rpc/finish_claude_research',json={'p_id':job['id'],'p_claim':job['claim_token'],'p_result':result,'p_error':error})
+        count+=1
         if not error:
             if result.get('evidence') or result.get('selections'):wake_consumers(db,job)
-            count+=1
         if error and retryable_provider(error):raise RuntimeError(error)
     return count
 
@@ -134,7 +134,7 @@ def main():
     try:
         research_limit=min(4,controls['batch_size'])
         researched=process_research(db,claude,research_limit,deadline)
-        enriched=process_events(db,claude,min(8,max(0,controls['batch_size']-research_limit)),deadline)
+        enriched=process_events(db,claude,min(8,max(0,controls['batch_size']-researched)),deadline)
         LOG.info('Saved %d research jobs and processed %d event jobs',researched,enriched)
     except Exception as exc:
         db.request('POST','rpc/record_conference_pipeline_failure',json={'p_pipeline':'claude','p_error':str(exc)[:750]})
@@ -142,3 +142,4 @@ def main():
     finally:claude.close()
 
 if __name__=='__main__':main()
+
