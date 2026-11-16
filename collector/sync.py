@@ -186,6 +186,11 @@ def sync_one(db, source, selected_passes=None, parse_only=False, run_id=None):
         raise
 
 
+def source_budget_available(deadline, seconds, now=None):
+    """Defer work rather than manufacture a timeout from the batch's final seconds."""
+    return deadline-(time.monotonic() if now is None else now)>=min(600,max(1,float(seconds)))+10
+
+
 def main():
     parser = argparse.ArgumentParser(description='Refresh CrowdStage conferences from official URLs only')
     parser.add_argument('--slug',help='Force refresh a single approved source, even if not yet due')
@@ -213,9 +218,9 @@ def main():
     # Manual pass requests share the same guarded worker and approval rules.
     # A focused request never enables a paused/unapproved source.
     handled=set()
-    run_deadline=time.monotonic()+max(150,min(int(os.environ.get('MAX_RUN_SECONDS','600')),1800))
+    run_deadline=time.monotonic()+max(min(600,float(os.environ['MAX_SOURCE_SECONDS']))+10,150,min(int(os.environ.get('MAX_RUN_SECONDS','600')),1800))
     for _ in range(0 if args.slug else min(50,max(1,int(os.environ.get('MAX_PARSE_REQUESTS','20'))))):
-        if time.monotonic()>=run_deadline-30:break
+        if not source_budget_available(run_deadline,os.environ['MAX_SOURCE_SECONDS']):break
         request=db.claim_parse_request()
         if not request:break
         handled.add(request['source_id'])
@@ -230,7 +235,7 @@ def main():
     LOG.info('%d direct sources selected',len(sources))
     failures = 0; fatal = False
     for index,s in enumerate(sources):
-        if time.monotonic()>=run_deadline:
+        if not source_budget_available(run_deadline,os.environ['MAX_SOURCE_SECONDS']):
             LOG.warning('Run time budget reached; %d due sources deferred to the next scheduled run',len(sources)-index)
             break
         try:
