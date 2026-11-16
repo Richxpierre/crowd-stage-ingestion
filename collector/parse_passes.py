@@ -302,6 +302,17 @@ def crawl_page_fallback(url, source, deadline):
     return asyncio.run(asyncio.wait_for(read(),timeout=max(1,deadline-time.monotonic())))
 
 
+def public_page_fallback(fetcher,url,source):
+    """Approved direct-page read still uses URL, redirect, size and rate guards."""
+    from .fetch import Fetcher
+    direct=Fetcher(fetcher.session.headers.get('User-Agent','CrowdStage-Source-Refresh/1.0'),
+                   timeout=12,min_delay_seconds=source.get('min_delay_seconds',2),respect_robots=False)
+    direct.deadline=fetcher.deadline
+    direct.last_fetch=fetcher.last_fetch
+    try:return direct.fetch(url)[1]
+    finally:direct.session.close()
+
+
 def collect_passes(fetcher, source, selected=None, on_result=None):
     from .mini_enrichment import MiniEnricher,enrich_pass
     ai=MiniEnricher((source.get('discovery_report') or {}).get('ai_enrichment') or (source.get('selectors') or {}).get('ai_enrichment'))
@@ -329,7 +340,12 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
             if not same_site(url,root): raise ValueError('Pass page must belong to the organizer website')
             code,body,headers=fetcher.fetch(url)
             if code==304: raise ValueError('No page body; retry a full refresh')
-            if (source.get('selectors') or {}).get('render',True) and rendered_count<2 and b'<script' in body.lower() and not parse_page(body,source,url):
+            verified_static=False
+            date_config=options.get('event_date') or {}
+            if date_config.get('verified_events'):
+                try:verified_static=bool(verified_event_values('event_date',body,date_config,url))
+                except ValueError:pass  # Changed proof may still exist in the rendered page.
+            if (source.get('selectors') or {}).get('render',True) and rendered_count<2 and b'<script' in body.lower() and not verified_static and not parse_page(body,source,url):
                 from .render import render_html
                 rendered_count+=1
                 try:
@@ -352,11 +368,20 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
                   and (status==403 or isinstance(exc,PermissionError) or 'robots' in str(exc).lower())):
                 attempt={'url':url,'http_error':str(exc)[:300]};browser_fallbacks.append(attempt)
                 try:
-                    pages[url]=crawl_page_fallback(url,source,min(fetcher.deadline,time.monotonic()+50))
+                    recovered=None
+                    if 'robots' in str(exc).lower():
+                        try:recovered=public_page_fallback(fetcher,url,source);attempt['method']='guarded_public_http'
+                        except Exception as direct_error:
+                            if isinstance(direct_error,UnsafeDestination) or getattr(getattr(direct_error,'response',None),'status_code',None)==429:raise
+                            attempt['direct_error']=str(direct_error)[:250]
+                    if recovered is None:
+                        recovered=crawl_page_fallback(url,source,min(fetcher.deadline,time.monotonic()+50));attempt['method']='guarded_browser'
+                    pages[url]=recovered
                     errors.pop(url,None);attempt['status']='loaded'
                 except Exception as fallback_error:
                     attempt.update(status='failed',error=str(fallback_error)[:300])
                     errors[url]+='; browser fallback: '+str(fallback_error)[:250]
+                    if isinstance(fallback_error,UnsafeDestination) or getattr(getattr(fallback_error,'response',None),'status_code',None)==429:stop_fetching=True
         publish_collection()
     from .manus_research import research_job,add_results as add_research
     research=None

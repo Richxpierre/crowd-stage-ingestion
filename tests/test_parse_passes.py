@@ -96,6 +96,35 @@ class ParsePassTests(unittest.TestCase):
         self.assertEqual(audit['browser_fallbacks'][0]['status'],'loaded')
         self.assertEqual(audit['errors'],[])
 
+    def test_broken_robots_endpoint_uses_guarded_direct_page_before_browser(self):
+        class Blocked:
+            def fetch(self,url):raise PermissionError('Robots policy redirected to HTML')
+        source={**SOURCE,'ingestion_allowed':True,'selectors':{**SOURCE['selectors'],'browser_fallback':True,'max_pages':1}}
+        with patch('collector.parse_passes.public_page_fallback',return_value=page(node(startDate='2027-04-26'))) as direct,patch('collector.parse_passes.crawl_page_fallback') as browser:
+            report,audit=collect_passes(Blocked(),source)
+        direct.assert_called_once();browser.assert_not_called()
+        self.assertEqual(assemble(report,source)[0]['start_date'],'2027-04-26')
+        self.assertEqual(audit['browser_fallbacks'][0]['method'],'guarded_public_http')
+
+    def test_verified_static_dates_are_not_replaced_by_an_empty_rendered_shell(self):
+        recipe={'title':'Cloud Conference 2027','edition':'2027','start_date':'2027-04-26','event_url':URL,'page_url':URL,'require_text':['Cloud Conference 2027','April 26-27, 2027'],'fields':{'start_date':'2027-04-26','end_date':'2027-04-27'}}
+        source={**SOURCE,'selectors':{'render':True,'max_pages':1,'parse_passes':{'event_date':{'require_verified':True,'reviewed_only':True,'verified_events':[recipe]}}}}
+        body=b'<h1>Cloud Conference 2027</h1><p>April 26-27, 2027</p><script>app()</script>'
+        with patch('collector.parse_passes.parse_page',return_value=[]),patch('collector.render.render_html',return_value=b'<html>Empty app shell</html>') as render:
+            report,_=collect_passes(Fetcher(body),source)
+        render.assert_not_called()
+        self.assertEqual(report['event_date']['status'],'success')
+
+    def test_rate_limit_during_direct_recovery_does_not_escalate_to_browser(self):
+        from requests import HTTPError,Response
+        response=Response();response.status_code=429
+        class Blocked:
+            def fetch(self,url):raise PermissionError('Robots policy redirected to HTML')
+        source={**SOURCE,'ingestion_allowed':True,'selectors':{**SOURCE['selectors'],'browser_fallback':True,'max_pages':3}}
+        with patch('collector.parse_passes.public_page_fallback',side_effect=HTTPError('Rate limited',response=response)),patch('collector.parse_passes.crawl_page_fallback') as browser:
+            collect_passes(Blocked(),source)
+        browser.assert_not_called()
+
     def test_browser_fallback_cannot_override_unsafe_destinations_or_rate_limits(self):
         from collector.fetch import UnsafeDestination
         from requests import HTTPError,Response
