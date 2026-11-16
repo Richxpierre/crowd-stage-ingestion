@@ -253,9 +253,26 @@ async def _validate_site(candidate,reader,search):
                     if len(expected)!=1 or proposed!=expected:config['selectors'].pop(field)
             extracted=(extract_pass(kind,{u:pages[u] for u in config['page_urls']},source,config,snapshot_cache=snapshot_cache)[:50]
                        if config['selectors'] else [r for r in initial if r['evidence']['page_url'] in config['page_urls']])
-            extracted=add_research(kind,pages,source,extracted,research)
+            # Explicit admin edition recipes retain their exact-text guards.
+            # They are still evaluated against this run's fresh organizer page.
+            reviewed=(candidate.get('parse_settings') or {}).get('parse_passes',{}).get(kind,{})
+            manual_recipe=bool((candidate.get('evidence') or {}).get('admin_reviewed') and reviewed.get('verified_events'))
+            if manual_recipe:
+                config={**reviewed,'enabled':True,'require_verified':True}
+                targets=config.get('page_urls') or list(pages)[:3]
+                from .parse_passes import canonical_page
+                for target in targets[:3]:
+                    if not any(canonical_page(u)==canonical_page(target) for u in pages) and same_owner(target,canonical) and len(pages)<8:
+                        try:
+                            page=await read(target)
+                            if same_owner(page['url'],canonical):pages[page['url']]=page['html'].encode()
+                        except Exception as exc:audit['errors'].append({'stage':'reviewed_page','url':target,'message':str(exc)[:500]})
+                resolved=[u for u in pages if any(canonical_page(u)==canonical_page(target) for target in targets)]
+                extracted=extract_pass(kind,{u:pages[u] for u in resolved},source,config,snapshot_cache=snapshot_cache)[:50]
+                config['page_urls']=resolved
+            if not manual_recipe:extracted=add_research(kind,pages,source,extracted,research)
             config['page_urls']=list(dict.fromkeys(config['page_urls']+[r['evidence']['page_url'] for r in extracted]))[:5]
-            extracted,config=await asyncio.to_thread(enrich_pass,kind,{u:pages[u] for u in config['page_urls']},source,config,extracted,ai)
+            if not manual_recipe:extracted,config=await asyncio.to_thread(enrich_pass,kind,{u:pages[u] for u in config['page_urls']},source,config,extracted,ai)
             plan[kind]=config
             results[kind]={'status':'success' if extracted else 'missing','results':extracted,'errors':[]}
         assembled=assemble(results,source)
