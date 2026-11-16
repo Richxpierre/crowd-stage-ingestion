@@ -66,6 +66,11 @@ def preserve_existing_identity(db, source, records):
                if clean_url(obs['payload'].get('event_url')) == clean_url(record.get('event_url'))
                and str(obs['payload'].get('start_date',''))[:4] == record['start_date'][:4]]
     identities = {obs['source_record_id'] for obs in matches}
+    choice=source.get('selectors',{}).get('identity_choice') or {}
+    if choice.get('edition')==record['start_date'][:4] and clean_url(choice.get('event_url'))==clean_url(record.get('event_url')):
+        selected=choice.get('source_record_id')
+        if selected not in identities:raise ValueError('Reviewed identity choice no longer matches a stored edition observation')
+        return [_finish(record,source['publisher'],selected)]
     if len(identities) > 1:
         raise ValueError('Ambiguous event identities on a dedicated source; review duplicates first')
     if identities:
@@ -98,6 +103,7 @@ def sync_one(db, source, selected_passes=None, parse_only=False, run_id=None):
             passes,report=collect_passes(fetcher,source,selected_passes,
                 on_result=lambda kind,result:db.save_parse_pass(run_id,sid,kind,result))
             records=assemble(passes,source)
+            if records:records=preserve_existing_identity(db,source,records)
             for kind,result in passes.items():db.save_parse_pass(run_id,sid,kind,result)
             if records:records=retain_known_optional(records,db.observations(sid),source['publisher'])
             report['events_found']=len(records)

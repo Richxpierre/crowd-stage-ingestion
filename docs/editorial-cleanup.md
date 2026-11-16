@@ -13,3 +13,12 @@ Admins inspect and apply proposals individually or select up to 25 visible propo
 Unresolved import attempts default to retention. An admin can explicitly choose to propose rejection for that batch. This declines the current admission attempt, not the website's validity. Evidence and reasons remain available and the URL can be reopened through Candidates. The manual November 16 cleanup used this policy at the user's request.
 
 The dashboard distinguishes slot limits, manual pauses, conflicts and worker failures. Intake pauses used for a manual backlog review should be restored after the review; timers must not override indefinite admin pauses.
+# Reviewed identity conflicts
+
+When a dedicated organizer page has two historical observation identities for the same annual edition, keep both observations and select the canonical one in its Advanced extraction settings:
+
+```json
+{"identity_choice":{"edition":"2027","event_url":"https://official.example/conference","source_record_id":"existing-observation-id"}}
+```
+
+The worker accepts only an identity already observed at that event URL and edition. The choice expires for another year and cannot invent an observation. Review duplicate event rows separately; this setting does not delete their history. Optional known facts are retained after the canonical identity has been selected.
