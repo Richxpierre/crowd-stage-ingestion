@@ -42,6 +42,17 @@ def bad_page(page):
 def ancillary_event_url(url):
     return bool(re.search(r'/(?:sessions?|speakers?|speaking|talks?|agenda|schedule|team-member)(?:/|$)|/veranstaltung-\d+-|[?&](?:session|speaker|talk)(?:id|_id)?=',str(url or ''),re.I))
 
+def specific_event_title(title):
+    value=re.sub(r'[^\w]+',' ',str(title or '')).strip().casefold()
+    if value in {'conference','conferences','event','events','upcoming events','our upcoming events','prossimo evento','event calendar','calendar','home','welcome','tickets','register','registration','visit website','event details'}:return False
+    if re.search(r'^(?:the )?next edition|^the (?:next )?conference will|^our upcoming',value):return False
+    from .enrichment_values import scope_issue
+    return len(value)>=4 and scope_issue(str(title or '')) is None
+
+def title_edition_conflict(title,start_date):
+    years=set(re.findall(r'(?<!\d)20\d{2}(?!\d)',str(title or '')))
+    return bool(years and str(start_date)[:4] not in years)
+
 
 def unrelated_page_event(page,records):
     """A sitewide schema event does not identify an unrelated article as its source."""
@@ -282,7 +293,7 @@ async def _validate_site(candidate,reader,search):
             if research:ai.audit['research']={k:research.get(k) for k in ('id','status','reason')}
         except Exception:ai.audit['research']={'status':'unavailable'}
         audit['ai_enrichment']=ai.audit
-        current=[r for r in assembled if r['end_date']>=today and int(r['start_date'][:4])<=date.today().year+2 and r.get('status')!='cancelled']
+        current=[r for r in assembled if r['end_date']>=today and int(r['start_date'][:4])<=date.today().year+2 and r.get('status')!='cancelled' and specific_event_title(r.get('title')) and not title_edition_conflict(r.get('title'),r['start_date'])]
         date_conflicts=visible_date_conflicts(first['html'].encode(),current) if current else []
         if date_conflicts:audit['structured_date_conflicts']=date_conflicts
         audit.update(event_evidence=[{'title':r['title'],'start_date':r['start_date'],'end_date':r['end_date'],'url':r['event_url'],'page_url':r['source_url']} for r in current][:20],

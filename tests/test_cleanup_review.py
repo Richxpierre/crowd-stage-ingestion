@@ -39,3 +39,11 @@ class CleanupTests(unittest.TestCase):
   self.assertTrue(plan['parse_passes']['event_date']['require_verified'])
  def test_multiple_event_headings_cannot_receive_one_shared_recipe(self):
   self.assertIsNone(reviewed_plan({'action':'recheck','url':'https://conf.org/','title':'Cloud Conference 2027','facts':[]},{'url':'https://conf.org/','headings':['One','Two'],'text':'Cloud Conference 2027'}))
+ def test_generic_calendar_and_meetup_titles_are_not_conferences(self):
+  from collector.source_validation import specific_event_title
+  for title in ('Conferences','Our Upcoming Events','Prossimo evento','Weekly cloud meetup','The next edition of the conference will take place in May 2027'):
+   self.assertFalse(specific_event_title(title),title)
+  self.assertTrue(specific_event_title('Cloud Conference 2027 with workshops'))
+  from collector.source_validation import title_edition_conflict
+  self.assertTrue(title_edition_conflict('Security Conference 2026','2027-09-20'))
+  self.assertFalse(title_edition_conflict('Conference 2026–2027 edition','2027-03-11'))

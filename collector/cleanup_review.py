@@ -88,6 +88,8 @@ def reviewed_plan(proposal,page):
  from .enrichment_values import normalize_evidence
  from .parse_passes import FIELDS,PASS_TYPES
  title=proposal['title']
+ from .source_validation import specific_event_title
+ if not specific_event_title(title):return None
  if not EVENT_WORD.search(title) or norm(title) not in norm(page['text']):return None
  fields={};quotes=[];rows=[]
  for fact in proposal.get('facts',[]):
@@ -97,6 +99,8 @@ def reviewed_plan(proposal,page):
    if parsed:fields[fact['field']]=parsed;quotes.append(fact['quote'])
   else:rows.append({**fact,'page_url':page['url'],'event_title':title})
  if not fields.get('start_date') or not fields.get('end_date') or fields['start_date']>fields['end_date'] or fields['end_date']<date.today().isoformat():return None
+ from .source_validation import title_edition_conflict
+ if title_edition_conflict(title,fields['start_date']):return None
  extra,proof,warnings=normalize_evidence(rows,page['text'],title,page['url'],{})
  fields.update({k:v for k,v in extra.items() if k!='industry_research'})
  if extra.get('industry_research'):fields['categories']=[extra['industry_research']]
