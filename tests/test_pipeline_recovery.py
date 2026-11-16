@@ -55,3 +55,15 @@ class RecoveryTests(unittest.TestCase):
   with patch('collector.claude_worker.configuration',return_value={'can_run':True}),patch('collector.manus_queue.wake_consumers'):
    process_research(db,claude,1,time.monotonic()+100)
   self.assertEqual(db.request.call_args.kwargs['json']['p_result'],{'selections':[{'field':'country','node_id':2}]})
+ def test_saved_research_is_reused_with_both_providers_paused(self):
+  from collector.manus_research import research_job
+  db=Mock();db.request.return_value=[{'id':'saved','status':'completed','result':{'evidence':[]}}]
+  with patch('collector.manus_backup.configured',return_value=False),patch('collector.claude_client.configured',return_value=False):
+   self.assertEqual(research_job({'url':'https://conf.org/'},{},db=db)['id'],'saved')
+  self.assertEqual(db.request.call_count,1)
+ def test_claude_research_queue_does_not_require_paid_manus_enabled(self):
+  from collector.manus_queue import enqueue
+  db=Mock();db.request.return_value={'id':'queued'}
+  payload={'stage':'research','url':'https://conf.org/','event':'Cloud Summit 2027','fields':['country']}
+  with patch('collector.manus_queue.configured',return_value=False),patch('collector.claude_client.configured',return_value=True),patch('collector.manus_queue.ManusClient') as paid:
+   self.assertEqual(enqueue(payload,db)['id'],'queued');paid.assert_not_called()

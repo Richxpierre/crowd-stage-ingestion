@@ -7,7 +7,8 @@ from .client import Client
 from .manus_backup import ManusClient,ManusError,configured,prepare_task,validate_selection
 
 def enqueue(payload,db=None):
-    if not configured():raise ManusError('manus_disabled')
+    from .claude_client import configured as claude_configured
+    if not configured() and not claude_configured():raise ManusError('manus_disabled')
     prepare_task(payload)  # Reject unusable excerpts before creating a queue row.
     key=hashlib.sha256(('manus-mini-v2|'+json.dumps(payload,sort_keys=True)).encode()).hexdigest()
     row=(db or Client()).request('POST','rpc/queue_manus_enrichment',json={'p_fingerprint':key,'p_payload':payload})
