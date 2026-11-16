@@ -56,7 +56,8 @@ class CleanupTests(unittest.TestCase):
   self.assertFalse(excluded('https://expfin.org/events/conference'))
  def test_calendar_and_track_records_do_not_reenter_ingestion(self):
   from collector.sync import in_scope_record
-  for title in ('MLK Jr. Holiday (University Closed)','Open Registration','Microbusiness Coffee Hour'):
+  for title in ('MLK Jr. Holiday (University Closed)','Open Registration','Microbusiness Coffee Hour','Lunch and Learn: The AI Smackdown: Battle of the Latest Tools','Lunch & Learn: Classroom Essentials','Last Chance to Vote! TCEA Board Election Closes Today'):
    self.assertFalse(in_scope_record({'title':title,'start_date':'2027-01-18','event_url':'https://conf.org/events/holiday'},'https://conf.org'))
   self.assertFalse(in_scope_record({'title':'Staff Engineering Skills','start_date':'2027-01-18','event_url':'https://conf.org/track/staff-skills'},'https://conf.org'))
   self.assertTrue(in_scope_record({'title':'Cloud Conference 2027','start_date':'2027-01-18','event_url':'https://conf.org'},'https://conf.org'))
+
