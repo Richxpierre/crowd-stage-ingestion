@@ -1,7 +1,7 @@
 import os
 import time
 import unittest
-from unittest.mock import Mock,patch
+from unittest.mock import Mock,patch,AsyncMock
 from collector.enrichment_values import normalize_evidence,scope_issue
 from collector.pipeline_control import configuration
 from collector.client import DatabaseError
@@ -67,3 +67,16 @@ class RecoveryTests(unittest.TestCase):
   payload={'stage':'research','url':'https://conf.org/','event':'Cloud Summit 2027','fields':['country']}
   with patch('collector.manus_queue.configured',return_value=False),patch('collector.claude_client.configured',return_value=True),patch('collector.manus_queue.ManusClient') as paid:
    self.assertEqual(enqueue(payload,db)['id'],'queued');paid.assert_not_called()
+ def test_manus_browser_failure_holds_existing_task_without_resubmission(self):
+  from datetime import datetime,timezone
+  from collector.manus_queue import reconcile
+  job={'id':'job','claim_token':'uuid','task_id':'existing','started_at':datetime.now(timezone.utc).isoformat(),'payload':{'stage':'research'}}
+  db=Mock();client=Mock()
+  client.task_status.return_value={'status':'completed','background_running':False,'credits_used':1}
+  client.usage.return_value={'allowance':300,'available':299,'spent':1}
+  client.result.return_value={'evidence':[{'field':'country'}]}
+  with patch('collector.manus_research.verify',new=AsyncMock(side_effect=RuntimeError('Browser unavailable'))):
+   self.assertEqual(reconcile(db,client,job),'review')
+  client.create.assert_not_called()
+  self.assertEqual(db.request.call_args.kwargs['json']['status'],'review')
+  self.assertEqual(db.request.call_args.kwargs['json']['result']['evidence'],[])
