@@ -18,6 +18,8 @@ class EventDataTests(unittest.TestCase):
     def test_timestamp_preserves_explicit_offset_but_never_invents_midnight(self):
         self.assertEqual(schema_dates({'startDate': '2027-05-01'}), {})
         self.assertEqual(schema_dates({'startDate': '2027-05-01T09:00:00-04:00'})['starts_at'], '2027-05-01T09:00:00-04:00')
+        self.assertEqual(schema_dates({'eventSchedule': {'scheduleTimezone': 'America/New_York'}})['timezone'], 'America/New_York')
+        self.assertEqual(schema_dates({'startDate': '2027-05-01T09:00:00+0200'})['starts_at'], '2027-05-01T09:00:00+02:00')
 
     def test_sponsors_and_industries_are_not_inferred_from_keywords(self):
         node = {'sponsor': [{'@type': 'Organization', 'name': 'Acme', 'url': 'https://acme.org'}],

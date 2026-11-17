@@ -48,11 +48,17 @@ def schema_location(node):
 
 def schema_dates(node):
     fields = {}
+    schedule = node.get('eventSchedule')
+    if isinstance(schedule, list):
+        schedule = schedule[0] if len(schedule) == 1 else None
+    zone = schedule.get('scheduleTimezone') if isinstance(schedule, dict) else None
+    if isinstance(zone, str) and len(zone) <= 100 and re.fullmatch(r'UTC|[A-Za-z_]+/[A-Za-z_+/-]+', zone):
+        fields['timezone'] = zone  # Database checks the actual IANA name.
     # Date-only values never become invented midnight timestamps.
     for key, target in [('startDate', 'starts_at'), ('endDate', 'ends_at')]:
         value = node.get(key)
-        if isinstance(value, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}T[0-9:.]+(?:Z|[+-]\d{2}:\d{2})', value):
-            fields[target] = value
+        if isinstance(value, str) and len(value)<=45 and re.fullmatch(r'\d{4}-\d{2}-\d{2}T[0-9:.]+(?:Z|[+-]\d{2}:?\d{2})', value):
+            fields[target] = re.sub(r'([+-]\d{2})(\d{2})$', r'\1:\2', value)
     return fields
 
 
