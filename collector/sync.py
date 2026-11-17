@@ -59,14 +59,19 @@ def preserve_existing_identity(db, source, records):
     This also adopts identities written by the older title-based parser, avoiding
     duplicate records when a source upgrades to the new parser.
     """
-    if len(records) != 1 or not source.get('selectors', {}).get('single_event'):
+    selectors=source.get('selectors', {})
+    choice=selectors.get('identity_choice') or {}
+    if len(records)>1 and selectors.get('single_event') and choice:
+        signatures={(clean_url(r.get('event_url')),r.get('start_date'),r.get('end_date'),str(r.get('title','')).casefold().strip()) for r in records}
+        if len(signatures)==1 and all(str(r.get('start_date',''))[:4]==choice.get('edition') and clean_url(r.get('event_url'))==clean_url(choice.get('event_url')) for r in records):
+            records=[next((r for r in records if r.get('source_record_id')==choice.get('source_record_id')),records[0])]
+    if len(records) != 1 or not selectors.get('single_event'):
         return records
     record = records[0]
     matches = [obs for obs in db.observations(source['id'])
                if clean_url(obs['payload'].get('event_url')) == clean_url(record.get('event_url'))
                and str(obs['payload'].get('start_date',''))[:4] == record['start_date'][:4]]
     identities = {obs['source_record_id'] for obs in matches}
-    choice=source.get('selectors',{}).get('identity_choice') or {}
     if choice.get('edition')==record['start_date'][:4] and clean_url(choice.get('event_url'))==clean_url(record.get('event_url')):
         selected=choice.get('source_record_id')
         if selected not in identities:raise ValueError('Reviewed identity choice no longer matches a stored edition observation')
@@ -261,4 +266,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
