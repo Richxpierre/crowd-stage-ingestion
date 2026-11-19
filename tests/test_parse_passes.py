@@ -72,6 +72,71 @@ class ParsePassTests(unittest.TestCase):
         report,_=collect_passes(Blocked(),SOURCE)
         self.assertTrue(all(r['status']=='failed' for r in report.values()))
 
+    def test_configured_pages_already_discovered_are_promoted_ahead_of_blog_links(self):
+        west=URL+'west';east=URL+'east';blogs=[URL+'blog/one',URL+'blog/two']
+        class Pages(Fetcher):
+            def fetch(self,url):
+                self.calls.append(url)
+                return 200,(b'<h1>Conference catalog</h1>' if url==URL else page(node(name='West Conference' if url==west else 'East Conference',url=url,startDate='2027-04-26'))),{}
+        source={**SOURCE,'selectors':{'max_pages':3,'render':False,'parse_passes':{'event_date':{'page_urls':[west,east]}}}}
+        fetcher=Pages(b'')
+        with patch('collector.parse_passes.discover_links',return_value=blogs+[west,east]):
+            report,_=collect_passes(fetcher,source)
+        self.assertEqual(fetcher.calls,[URL,west,east])
+        self.assertEqual(len(report['event_date']['results']),2)
+
+    def test_approved_source_uses_one_shared_browser_snapshot_after_access_failure(self):
+        class Blocked:
+            def fetch(self,url):raise PermissionError('403 access denied')
+        source={**SOURCE,'ingestion_allowed':True,'selectors':{**SOURCE['selectors'],'browser_fallback':True,'max_pages':1}}
+        with patch('collector.parse_passes.crawl_page_fallback',return_value=page(node(startDate='2027-04-26'))) as fallback:
+            report,audit=collect_passes(Blocked(),source)
+        fallback.assert_called_once()
+        self.assertEqual(assemble(report,source)[0]['start_date'],'2027-04-26')
+        self.assertEqual(audit['browser_fallbacks'][0]['status'],'loaded')
+        self.assertEqual(audit['errors'],[])
+
+    def test_broken_robots_endpoint_uses_guarded_direct_page_before_browser(self):
+        class Blocked:
+            def fetch(self,url):raise PermissionError('Robots policy redirected to HTML')
+        source={**SOURCE,'ingestion_allowed':True,'selectors':{**SOURCE['selectors'],'browser_fallback':True,'max_pages':1}}
+        with patch('collector.parse_passes.public_page_fallback',return_value=page(node(startDate='2027-04-26'))) as direct,patch('collector.parse_passes.crawl_page_fallback') as browser:
+            report,audit=collect_passes(Blocked(),source)
+        direct.assert_called_once();browser.assert_not_called()
+        self.assertEqual(assemble(report,source)[0]['start_date'],'2027-04-26')
+        self.assertEqual(audit['browser_fallbacks'][0]['method'],'guarded_public_http')
+
+    def test_verified_static_dates_are_not_replaced_by_an_empty_rendered_shell(self):
+        recipe={'title':'Cloud Conference 2027','edition':'2027','start_date':'2027-04-26','event_url':URL,'page_url':URL,'require_text':['Cloud Conference 2027','April 26-27, 2027'],'fields':{'start_date':'2027-04-26','end_date':'2027-04-27'}}
+        source={**SOURCE,'selectors':{'render':True,'max_pages':1,'parse_passes':{'event_date':{'require_verified':True,'reviewed_only':True,'verified_events':[recipe]}}}}
+        body=b'<h1>Cloud Conference 2027</h1><p>April 26-27, 2027</p><script>app()</script>'
+        with patch('collector.parse_passes.parse_page',return_value=[]),patch('collector.render.render_html',return_value=b'<html>Empty app shell</html>') as render:
+            report,_=collect_passes(Fetcher(body),source)
+        render.assert_not_called()
+        self.assertEqual(report['event_date']['status'],'success')
+
+    def test_rate_limit_during_direct_recovery_does_not_escalate_to_browser(self):
+        from requests import HTTPError,Response
+        response=Response();response.status_code=429
+        class Blocked:
+            def fetch(self,url):raise PermissionError('Robots policy redirected to HTML')
+        source={**SOURCE,'ingestion_allowed':True,'selectors':{**SOURCE['selectors'],'browser_fallback':True,'max_pages':3}}
+        with patch('collector.parse_passes.public_page_fallback',side_effect=HTTPError('Rate limited',response=response)),patch('collector.parse_passes.crawl_page_fallback') as browser:
+            collect_passes(Blocked(),source)
+        browser.assert_not_called()
+
+    def test_browser_fallback_cannot_override_unsafe_destinations_or_rate_limits(self):
+        from collector.fetch import UnsafeDestination
+        from requests import HTTPError,Response
+        response=Response();response.status_code=429
+        source={**SOURCE,'ingestion_allowed':True,'selectors':{**SOURCE['selectors'],'browser_fallback':True,'max_pages':1}}
+        for error in [UnsafeDestination('private host'),HTTPError('rate limited',response=response)]:
+            class Blocked:
+                def fetch(self,url):raise error
+            with patch('collector.parse_passes.crawl_page_fallback') as fallback:
+                collect_passes(Blocked(),source)
+            fallback.assert_not_called()
+
     def test_html_details_without_date(self):
         results=extract_pass('event_details', {URL:b'<h1>Cloud Conference</h1><meta name="description" content="All about cloud"><meta name="keywords" content="cloud, infrastructure">'},SOURCE,{})
         self.assertEqual(results[0]['fields']['categories'],['cloud','infrastructure'])

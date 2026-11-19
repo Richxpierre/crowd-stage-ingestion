@@ -291,6 +291,28 @@ def extract_pass(kind, pages, source, config, on_page=None, snapshot_cache=None)
         if on_page:on_page()
     return results
 
+def crawl_page_fallback(url, source, deadline):
+    """Reuse validation's bounded public browser for an already approved Source."""
+    import asyncio
+    from .crawler_reader import Crawl4AIReader
+    async def read():
+        async with Crawl4AIReader('CrowdStage-Source-Refresh/1.0',deadline=deadline,skip_robots_for=source['url']) as reader:
+            result=await reader.read(url)
+            return result['html'].encode('utf-8')
+    return asyncio.run(asyncio.wait_for(read(),timeout=max(1,deadline-time.monotonic())))
+
+
+def public_page_fallback(fetcher,url,source):
+    """Approved direct-page read still uses URL, redirect, size and rate guards."""
+    from .fetch import Fetcher
+    direct=Fetcher(fetcher.session.headers.get('User-Agent','CrowdStage-Source-Refresh/1.0'),
+                   timeout=12,min_delay_seconds=source.get('min_delay_seconds',2),respect_robots=False)
+    direct.deadline=fetcher.deadline
+    direct.last_fetch=fetcher.last_fetch
+    try:return direct.fetch(url)[1]
+    finally:direct.session.close()
+
+
 def collect_passes(fetcher, source, selected=None, on_result=None):
     from .mini_enrichment import MiniEnricher,enrich_pass
     ai=MiniEnricher((source.get('discovery_report') or {}).get('ai_enrichment') or (source.get('selectors') or {}).get('ai_enrichment'))
@@ -298,7 +320,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
     if any(p not in PASS_TYPES for p in selected): raise ValueError('Unknown parse pass')
     options=(source.get('selectors') or {}).get('parse_passes') or {}
     reviewed_only=all((options.get(kind) or {}).get('reviewed_only') or (options.get(kind) or {}).get('enabled',True) is False for kind in selected)
-    pages={}; errors={}; report={}; started=now();rendered_count=0;stop_fetching=False
+    pages={}; errors={}; report={}; started=now();rendered_count=0;stop_fetching=False;browser_fallbacks=[]
     root=clean_url(source['url'])
     if not root: raise ValueError('Source must be HTTPS')
     fetcher.deadline=time.monotonic()+150
@@ -318,7 +340,12 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
             if not same_site(url,root): raise ValueError('Pass page must belong to the organizer website')
             code,body,headers=fetcher.fetch(url)
             if code==304: raise ValueError('No page body; retry a full refresh')
-            if (source.get('selectors') or {}).get('render',True) and rendered_count<2 and b'<script' in body.lower() and not parse_page(body,source,url):
+            verified_static=False
+            date_config=options.get('event_date') or {}
+            if date_config.get('verified_events'):
+                try:verified_static=bool(verified_event_values('event_date',body,date_config,url))
+                except ValueError:pass  # Changed proof may still exist in the rendered page.
+            if (source.get('selectors') or {}).get('render',True) and rendered_count<2 and b'<script' in body.lower() and not verified_static and not parse_page(body,source,url):
                 from .render import render_html
                 rendered_count+=1
                 try:
@@ -332,8 +359,29 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
         except Exception as exc:
             errors[url]=str(exc)[:500]
             from .fetch import UnsafeDestination
-            if isinstance(exc,UnsafeDestination) or getattr(getattr(exc,'response',None),'status_code',None)==429:
+            status=getattr(getattr(exc,'response',None),'status_code',None)
+            if isinstance(exc,UnsafeDestination) or status==429:
                 stop_fetching=True
+            elif (source.get('ingestion_allowed') is True and source.get('is_official_source') is True
+                  and (source.get('selectors') or {}).get('browser_fallback') is True
+                  and len(browser_fallbacks)<2 and time.monotonic()<fetcher.deadline-15
+                  and (status==403 or isinstance(exc,PermissionError) or 'robots' in str(exc).lower())):
+                attempt={'url':url,'http_error':str(exc)[:300]};browser_fallbacks.append(attempt)
+                try:
+                    recovered=None
+                    if 'robots' in str(exc).lower():
+                        try:recovered=public_page_fallback(fetcher,url,source);attempt['method']='guarded_public_http'
+                        except Exception as direct_error:
+                            if isinstance(direct_error,UnsafeDestination) or getattr(getattr(direct_error,'response',None),'status_code',None)==429:raise
+                            attempt['direct_error']=str(direct_error)[:250]
+                    if recovered is None:
+                        recovered=crawl_page_fallback(url,source,min(fetcher.deadline,time.monotonic()+50));attempt['method']='guarded_browser'
+                    pages[url]=recovered
+                    errors.pop(url,None);attempt['status']='loaded'
+                except Exception as fallback_error:
+                    attempt.update(status='failed',error=str(fallback_error)[:300])
+                    errors[url]+='; browser fallback: '+str(fallback_error)[:250]
+                    if isinstance(fallback_error,UnsafeDestination) or getattr(getattr(fallback_error,'response',None),'status_code',None)==429:stop_fetching=True
         publish_collection()
     from .manus_research import research_job,add_results as add_research
     research=None
@@ -349,11 +397,15 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
     if research:
         for row in (research.get('result') or {}).get('evidence',[]):
             if row['page_url'] not in queue:queue.insert(0,row['page_url'])
+    configured=[]
     for kind in selected:
         cfg=options.get(kind) or {}
         for url in cfg.get('page_urls') or []:
             target=clean_url(url)
-            if target and target not in queue:queue.insert(0,target)
+            if target and target not in configured:configured.append(target)
+    # A configured venue/edition page must not lose its budget to blog links
+    # merely because discovery had already placed it later in the queue.
+    queue=configured+[url for url in queue if url not in configured]
     while queue and not stop_fetching and len(set(pages)|set(errors))<max_pages:
         url=queue.pop(0)
         if url in pages or url in errors:continue
@@ -390,7 +442,7 @@ def collect_passes(fetcher, source, selected=None, on_result=None):
         if not research and not reviewed_only:research=research_job(source,pages,report)
         if research:ai.audit['research']={k:research.get(k) for k in ('id','status','reason')}
     except Exception:ai.audit['research']={'status':'unavailable'}
-    return report,dict(mode='four_pass',started_at=started,pages=list(pages),pages_checked=len(pages),
+    return report,dict(mode='four_pass',started_at=started,pages=list(pages),pages_checked=len(pages),browser_fallbacks=browser_fallbacks,
                        errors=[{'url':u,'message':m} for u,m in errors.items()],parse_passes=report,ai_enrichment=ai.audit)
 
 def assemble(report, source):

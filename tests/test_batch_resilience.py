@@ -10,6 +10,7 @@ class BatchResilienceTests(unittest.TestCase):
   db=Mock();db.claim_parse_request.return_value=None
   db.sources.return_value=[{'id':str(i),'slug':'source-'+str(i)} for i in range(len(effects))]
   with patch('sys.argv',['sync',*arguments]),patch('collector.sync.Client',return_value=db),\
+       patch('collector.sync.configuration',return_value={'can_run':True,'batch_size':15,'item_timeout_seconds':300}),\
        patch('collector.sync.sync_one',side_effect=effects) as sync,patch.dict(os.environ,{'MAX_PARSE_REQUESTS':'1'}):
    main();return sync.call_count
  def test_bad_website_does_not_disable_the_batch_or_skip_a_healthy_source(self):

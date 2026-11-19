@@ -7,7 +7,8 @@ from .client import Client
 from .manus_backup import ManusClient,ManusError,configured,prepare_task,validate_selection
 
 def enqueue(payload,db=None):
-    if not configured():raise ManusError('manus_disabled')
+    from .claude_client import configured as claude_configured
+    if not configured() and not claude_configured():raise ManusError('manus_disabled')
     prepare_task(payload)  # Reject unusable excerpts before creating a queue row.
     key=hashlib.sha256(('manus-mini-v2|'+json.dumps(payload,sort_keys=True)).encode()).hexdigest()
     row=(db or Client()).request('POST','rpc/queue_manus_enrichment',json={'p_fingerprint':key,'p_payload':payload})
@@ -59,7 +60,15 @@ def reconcile(db,client,job):
                 patch(db,job,{'reason':'manus_verifying_citations'})
                 import asyncio
                 from .manus_research import verify
-                result=asyncio.run(verify(result,job['payload']))
+                try:
+                    async def bounded_verify():return await asyncio.wait_for(verify(result,job['payload']),timeout=45)
+                    result=asyncio.run(bounded_verify())
+                except Exception as exc:
+                    # Keep the existing task and its proposal for inspection;
+                    # never create another paid task to repeat failed verification.
+                    patch(db,job,{'status':'review','result':{'proposed_evidence':result.get('evidence',[]),'evidence':[]},
+                        'reason':'manus_citation_verification_failed: '+str(exc)[:350],'completed_at':datetime.now(timezone.utc).isoformat()})
+                    return 'review'
             patch(db,job,{'status':'completed','result':result,'completed_at':datetime.now(timezone.utc).isoformat(),'reason':None})
             if job['payload'].get('stage')!='research' or result.get('evidence'):wake_consumers(db,job)
             else:patch(db,job,{'reason':'manus_no_supported_evidence'})
@@ -73,7 +82,7 @@ def reconcile(db,client,job):
 
 def tick(db,client):
     if not configured():return {'reason':'manus_disabled'}
-    active=db.request('GET','conference_manus_jobs',params={'status':'eq.running','select':'*','order':'started_at','limit':'1'})
+    active=db.request('GET','conference_manus_jobs',params={'status':'eq.running','task_id':'not.is.null','select':'*','order':'started_at','limit':'1'})
     if active:
         try:return {'reason':reconcile(db,client,active[0]),'id':active[0]['id']}
         except ManusError as exc:
@@ -104,10 +113,21 @@ def settle_finished(db,client):
         patch(db,job,{'credits_used':state['credits_used'],'checked_at':datetime.now(timezone.utc).isoformat()})
 
 def main():
-    db=Client();client=ManusClient();deadline=time.monotonic()+150
+    db=Client()
+    from .pipeline_control import configuration
+    controls=configuration(db,'enrichment')
+    if not controls['can_run']:
+        print(json.dumps({'reason':'manus_paused_by_admin'}));return
+    client=ManusClient();deadline=time.monotonic()+150
     try:
         settle_finished(db,client)
         while time.monotonic()<deadline:
+            controls=configuration(db,'enrichment')
+            if not controls['can_run']:break
+            if not controls.get('manus_new_tasks'):
+                active=db.request('GET','conference_manus_jobs',params={'status':'eq.running','task_id':'not.is.null','select':'*','limit':'1'})
+                if active:reconcile(db,client,active[0])
+                print(json.dumps({'reason':'reconciliation_only_no_new_tasks'}));break
             result=tick(db,client);print(json.dumps(result))
             if result['reason'] not in ('manus_pending','pending'):break
             time.sleep(5)

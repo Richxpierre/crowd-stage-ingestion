@@ -108,3 +108,4 @@ class AutomaticTests(unittest.TestCase):
         self.assertIn('rendered_html',report['methods'])
 
 if __name__=='__main__':unittest.main()
+

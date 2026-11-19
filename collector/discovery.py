@@ -21,6 +21,7 @@ LOG=logging.getLogger('crowdstage-discovery')
 EVENT_HINT=re.compile(r'conference|congress|symposium|convention|summit|expo|trade.?show|trade.?fair|workshop|con\b',re.I)
 OFFICIAL_HINT=re.compile(r'official|\bwebsite\b|\bhomepage\b|event\s*site|visit\s*(?:the\s+)?(?:site|conference)',re.I)
 DENY_HOSTS={'facebook.com','instagram.com','linkedin.com','twitter.com','x.com','youtube.com','youtu.be','tiktok.com','maps.google.com','accounts.google.com','play.google.com','apps.apple.com','eventbrite.com','meetup.com','inomics.com','10times.com','conferencemonkey.org','sessionize.com','spotify.com','anchor.fm','soundcloud.com','web.archive.org','bsky.app','reddit.com'}
+DENY_HOSTS.update({'callforpaper.org','wikicfp.com','conferencealerts.com','allconferencealert.com','allevents.in'})
 SKIP=re.compile(r'/(?:login|signup|register|user|privacy|terms|legal|speaker|speakers|sessions?|schedule|blog|news|publish|contact|about|help)(?:/|$)',re.I)
 
 
@@ -237,7 +238,15 @@ def main():
     args=parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     if args.job_file and args.job_id:parser.error('--job-id cannot be combined with --job-file')
-    db=Client();job=json.loads(Path(args.job_file).read_text(encoding='utf-8')) if args.job_file else db.claim_crawl_job(args.job_id)
+    db=Client()
+    from .pipeline_control import configuration
+    controls=configuration(db,'discovery')
+    if not controls['can_run']:
+        LOG.info('Discovery is paused by admin control')
+        if args.claim_only and os.environ.get('GITHUB_OUTPUT'):
+            with open(os.environ['GITHUB_OUTPUT'],'a') as output:output.write('has_job=false\n')
+        return
+    job=json.loads(Path(args.job_file).read_text(encoding='utf-8')) if args.job_file else db.claim_crawl_job(args.job_id)
     if args.claim_only:
         if job and job.get('id'):Path(args.claim_only).write_text(json.dumps(job,ensure_ascii=True),encoding='utf-8')
         if os.environ.get('GITHUB_OUTPUT'):
@@ -248,6 +257,9 @@ def main():
     try:
         worker_deadline=time.monotonic()+600
         while True:
+            if not configuration(db,'discovery')['can_run']:
+                db.update_crawl_job(job['id'],{'status':'queued','summary':'Paused by admin; saved continuation retained'});break
+            job['config']['max_pages']=min(int(job['config'].get('max_pages',50)),controls['batch_size'])
             bulk=not job['config'].get('setup_only') and job['config'].get('settings',{}).get('adapter') in ('sessionize','conference_monkey')
             if args.drain_bulk and bulk:job['config']['bulk_batch_seconds']=max(1,min(180,worker_deadline-time.monotonic()))
             result=asyncio.run(run_job(db,job));LOG.info('Discovery result: %s',result)

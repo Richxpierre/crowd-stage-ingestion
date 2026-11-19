@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import time
+import re
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 import requests
@@ -15,9 +16,12 @@ from .parsers import clean_url
 
 def result_url(value):
     try:
-        p=urlsplit(value)
+        if not isinstance(value,str):return None
+        p=urlsplit(value.strip())
         if p.scheme not in ('https','http') or p.username or p.password or p.port not in (None,80,443):return None
-        host=(p.hostname or '').lower().rstrip('.')
+        host=(p.hostname or '').strip().lower().rstrip('.').translate(str.maketrans({'‐':'-','‑':'-','‒':'-','–':'-','−':'-'}))
+        if re.search(r'\s',host):return None
+        host=host.encode('idna').decode('ascii')
         if '.' not in host or host.endswith(('.local','.localhost','.internal','.test','.invalid')):return None
         try:ipaddress.ip_address(host);return None
         except ValueError:pass

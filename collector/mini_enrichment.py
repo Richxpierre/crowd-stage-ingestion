@@ -73,6 +73,8 @@ def ask_claude(payload):
 
 
 def ask_openai(payload):
+    if os.environ.get('AI_ENRICHMENT_ENABLED') != '1' or os.environ.get('OPENAI_PAUSED', '1') != '0':
+        raise RuntimeError('openai_paused')
     key = os.environ.get('OPENAI_API_KEY')
     if not key: raise RuntimeError('missing_key')
     with requests.Session() as client:
@@ -104,7 +106,7 @@ def ask(payload):
         try:
             return ask_claude(payload)
         except Exception:
-            if not os.environ.get('OPENAI_API_KEY'): raise
+            if os.environ.get('AI_ENRICHMENT_ENABLED') != '1' or os.environ.get('OPENAI_PAUSED', '1') != '0' or not os.environ.get('OPENAI_API_KEY'): raise
     return ask_openai(payload)
 
 
@@ -133,7 +135,8 @@ class MiniEnricher:
         else:
             if self.calls>=3:entry['reason']='budget_exhausted';return []
             if self.deadline is not None and time.monotonic()+22>=self.deadline:entry['reason']='time_budget_exhausted';return []
-            primary=self.provider is not ask or os.environ.get('AI_ENRICHMENT_ENABLED')=='1' and bool(os.environ.get('OPENAI_API_KEY'))
+            from .claude_client import configured as claude_configured
+            primary=self.provider is not ask or claude_configured() or (os.environ.get('AI_ENRICHMENT_ENABLED')=='1' and os.environ.get('OPENAI_PAUSED','1')=='0' and bool(os.environ.get('OPENAI_API_KEY')))
             result=None
             if not primary:
                 entry.update(provider='manus',status='deferred',reason='manus_agent_research_pass')

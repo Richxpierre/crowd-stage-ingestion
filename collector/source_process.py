@@ -15,7 +15,7 @@ def _child(source, selected, preview, run_id, connection):
         result = sync_one(Client(), source, selected, preview, run_id=run_id)
         connection.send({'counts': result})
     except Exception as exc:
-        connection.send({'error': str(exc)[:750], 'source_error': expected_source_error(exc)})
+        connection.send({'error': str(exc)[:750], 'source_error': not isinstance(exc,DatabaseError)})
     finally:
         connection.close()
 
@@ -41,7 +41,8 @@ def finish_interrupted(db, source, run_id, message):
         params={'run_id': 'eq.' + run_id, 'status': 'eq.running'},
         json={'status': 'failed', 'completed_at': now.isoformat(), 'heartbeat_at': now.isoformat(),
               'progress_stage': 'complete', 'errors': [{'message': message}]})
-    db.update_source(source['id'], {'last_attempt_at': now.isoformat(), 'last_error': message,
+    if isinstance(db,Client):db.source_failure(source['id'],message,True)
+    else:db.update_source(source['id'], {'last_attempt_at': now.isoformat(), 'last_error': message,
         'next_check_at': (now + timedelta(hours=6)).isoformat()})
 
 

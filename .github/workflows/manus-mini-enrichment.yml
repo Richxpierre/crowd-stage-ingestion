@@ -17,7 +17,6 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       AI_ENRICHMENT_ENABLED: '0'
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
       MANUS_BACKUP_ENABLED: ${{ vars.MANUS_BACKUP_ENABLED }}
     steps:
@@ -27,7 +26,28 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r requirements.txt
-      - run: python -m collector.manus_queue
+      - name: Check admin control before browser setup
+        id: pending
+        run: |
+          python - <<'PY'
+          import os
+          from collector.client import Client
+          from collector.pipeline_control import configuration
+          db=Client();control=configuration(db,'enrichment')
+          active=control['can_run'] and (control.get('manus_new_tasks') or bool(db.request('GET','conference_manus_jobs',params={'status':'eq.running','task_id':'not.is.null','select':'id','limit':'1'})))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out: out.write('active='+str(bool(active)).lower()+'\n')
+          PY
+      - if: steps.pending.outputs.active == 'true'
+        run: pip install -r requirements-crawler.txt
+      - if: steps.pending.outputs.active == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: chromium-${{ runner.os }}-${{ hashFiles('requirements.txt', 'requirements-crawler.txt') }}
+      - if: steps.pending.outputs.active == 'true'
+        run: python -m playwright install --with-deps chromium
+      - if: steps.pending.outputs.active == 'true'
+        run: python -m collector.manus_queue
       - name: Publish readiness
         if: always()
         continue-on-error: true

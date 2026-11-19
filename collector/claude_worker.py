@@ -1,21 +1,20 @@
-"""Claude Core Brain Enrichment Worker for CrowdStage.
-Offloads research and attribute extraction from Manus, saving paid credits and latency.
-"""
-from __future__ import annotations
+"""Fair, leased mini-enrichment. Unsupported evidence stays in review."""
+import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
 from bs4 import BeautifulSoup
-import requests
+from .client import Client,DatabaseError
+from .claude_client import ClaudeClient,configured
+from .enrichment_values import normalize_evidence,normalized,scope_issue
+from .pipeline_control import configuration
+from .fetch import Fetcher,UnsafeDestination
+from .parsers import clean_url
 
-from .client import Client
-from .claude_client import ClaudeClient, configured as claude_configured
-from .manus_queue import wake_consumers
-
-LOG = logging.getLogger('crowdstage-claude-worker')
+LOG=logging.getLogger('crowdstage-claude-worker')
 
 def classify_event(title: str, text: str = '') -> tuple[str, bool]:
     """Classify event into kind and determine if in scope (conference, expo, trade-show, summit)."""
@@ -40,303 +39,139 @@ def classify_event(title: str, text: str = '') -> tuple[str, bool]:
         return ('summit', True)
     return ('conference', True)
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-def clean_page_text(html: str) -> str:
-    soup = BeautifulSoup(html, 'html.parser')
-    for tag in soup(['script', 'style', 'nav', 'footer', 'noscript', 'svg']):
-        tag.decompose()
-    text = soup.get_text(' ', strip=True)
-    return re.sub(r'\s+', ' ', text)
-
-def fetch_page(url: str, timeout: int = 8) -> str | None:
+def read_page(url):
+    fetcher=Fetcher(os.environ.get('COLLECTOR_USER_AGENT') or 'CrowdStage-Enrichment/1.0 (+https://github.com/Richxpierre/crowd-stage-ingestion)',timeout=10)
+    fetcher.deadline=time.monotonic()+35
     try:
-        headers = {'User-Agent': os.environ.get('COLLECTOR_USER_AGENT') or 'CrowdStage-Intelligence/1.0'}
-        resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        if resp.status_code == 200:
-            return resp.text
-        LOG.warning('Failed to fetch %s: HTTP %d', url, resp.status_code)
-    except Exception as exc:
-        LOG.warning('Fetch error for %s: %s', url, exc)
-    return None
+        _,body,headers=fetcher.fetch(url)
+        final=headers.get('X-CrowdStage-Final-URL',url)
+        soup=BeautifulSoup(body,'html.parser')
+        for node in soup.select('script,style,nav,header,footer,aside,noscript,svg'):node.decompose()
+        text=soup.get_text(' ',strip=True)
+        if len(text)>=80:return final,text[:16000],hashlib.sha256(body).hexdigest(),body
+    except UnsafeDestination:
+        raise
+    except Exception:
+        pass
+    # Browser fallback remains guarded and bounded. A blocked page is a retry,
+    # never proof that an event does not exist.
+    from .crawler_reader import Crawl4AIReader
+    async def rendered():
+        async with Crawl4AIReader(os.environ.get('COLLECTOR_USER_AGENT','CrowdStage-Enrichment/1.0'),deadline=time.monotonic()+35) as reader:
+            page=await asyncio.wait_for(reader.read(url),timeout=35)
+            body=(page.get('html') or '').encode()
+            soup=BeautifulSoup(body,'html.parser')
+            for node in soup.select('script,style,nav,footer,noscript'):node.decompose()
+            return page['url'],soup.get_text(' ',strip=True)[:16000],hashlib.sha256(body).hexdigest(),body
+    return asyncio.run(rendered())
 
-def process_manus_queue(db: Client, claude: ClaudeClient, limit: int = 5) -> int:
-    """Claim and resolve queued Manus research tasks with Claude."""
-    processed = 0
-    try:
-        # Check for queued jobs in conference_manus_jobs
-        jobs = db.request('GET', 'conference_manus_jobs', params={
-            'status': 'eq.queued',
-            'select': '*',
-            'order': 'created_at.asc',
-            'limit': str(limit)
-        })
-    except Exception as exc:
-        LOG.warning('Could not query conference_manus_jobs: %s', exc)
-        return 0
+def retryable_provider(exc):
+    return any(x in str(exc) for x in ('provider_','verification_timeout','missing_key'))
 
-    for job in jobs:
-        jid = job['id']
-        payload = job.get('payload') or {}
-        stage = payload.get('stage')
-        url = payload.get('url')
-        event_title = payload.get('event') or 'Conference'
-        fields = payload.get('fields') or ['country', 'format', 'city']
-
-        LOG.info('Claude taking job %s (%s) for %s', jid, stage, event_title)
-
-        # Claim the job
-        claim_token = f'claude-{int(time.time())}'
+def process_research(db,claude,limit,deadline):
+    count=0
+    from .mini_enrichment import INSTRUCTIONS
+    from .manus_queue import wake_consumers
+    for _ in range(limit):
+        if time.monotonic()>deadline-45 or not configuration(db,'claude')['can_run']:break
+        job=db.request('POST','rpc/claim_claude_research',json={})
+        if not job:break
+        payload=job.get('payload') or {};result={};error=None
         try:
-            db.request('PATCH', 'conference_manus_jobs', params={'id': 'eq.' + jid, 'status': 'eq.queued'}, json={
-                'status': 'running',
-                'claim_token': claim_token,
-                'started_at': utc_now(),
-                'reason': 'claude_processing'
-            })
+            if payload.get('stage')=='research':
+                url,text,digest,_=read_page(payload['url'])
+                evidence,_=claude.research_fields(payload.get('event','Conference'),url,payload.get('fields',[]),text)
+                accepted=[]
+                for row in evidence:
+                    if not isinstance(row,dict):continue
+                    value,quote=row.get('value'),row.get('quote')
+                    if not isinstance(value,str) or not isinstance(quote,str) or not 3<=len(quote)<=600:continue
+                    if row.get('field') not in payload.get('fields',[]):continue
+                    if normalized(row.get('event_title'))!=normalized(payload.get('event')) or clean_url(row.get('page_url'))!=clean_url(url):continue
+                    if normalized(quote) not in normalized(text) or normalized(value) not in normalized(quote):continue
+                    accepted.append({k:row[k] for k in ('field','value','quote','page_url','event_title')})
+                result={'evidence':accepted[:7]}
+            else:
+                picked,_=claude.select_evidence(payload,INSTRUCTIONS)
+                nodes={n['id'] for n in payload.get('nodes',[]) if isinstance(n,dict) and 'id' in n}
+                result={'selections':[r for r in picked.get('selections',[]) if isinstance(r,dict) and r.get('field') in payload.get('fields',[]) and type(r.get('node_id')) is int and r['node_id'] in nodes][:8]}
+        except DatabaseError:raise
         except Exception as exc:
-            LOG.warning('Failed to claim job %s: %s', jid, exc)
-            continue
+            error=str(exc)[:500];LOG.warning('Research job did not finish: %s',error)
+        db.request('POST','rpc/finish_claude_research',json={'p_id':job['id'],'p_claim':job['claim_token'],'p_result':result,'p_error':error})
+        count+=1
+        if not error:
+            if result.get('evidence') or result.get('selections'):wake_consumers(db,job)
+        if error and retryable_provider(error):raise RuntimeError(error)
+    return count
 
-        if not url:
-            db.request('PATCH', 'conference_manus_jobs', params={'id': 'eq.' + jid}, json={
-                'status': 'failed',
-                'reason': 'missing_url',
-                'completed_at': utc_now()
-            })
+def process_events(db,claude,limit,deadline):
+    count=0
+    for _ in range(limit):
+        if time.monotonic()>deadline-45 or not configuration(db,'claude')['can_run']:break
+        job=db.request('POST','rpc/claim_conference_event_enrichment',json={})
+        if not job:break
+        event=job['event'];patch={};report={};error=None;outcome='completed';fatal=False
+        if event.get('status') not in (None,'pending_review'):
+            db.request('PATCH','conference_event_enrichment_jobs',params={'id':'eq.'+job['id'],'claim_token':'eq.'+job['claim_token']},json={'status':'completed','claim_token':None,'lease_until':None,'last_error':None,'report':{'resolution':'Event already resolved by an administrator'}})
             continue
-
-        html = fetch_page(url)
-        if not html:
-            db.request('PATCH', 'conference_manus_jobs', params={'id': 'eq.' + jid}, json={
-                'status': 'failed',
-                'reason': 'target_fetch_failed',
-                'completed_at': utc_now()
-            })
-            continue
-
-        text = clean_page_text(html)
         try:
-            evidence, usage = claude.research_fields(event_title, url, fields, text)
-        except RuntimeError as exc:
-            if 'verification_timeout_abandoned' in str(exc):
-                LOG.warning('Claude verification abandoned for %s (timeout threshold exceeded to conserve tokens)', event_title)
-                db.request('PATCH', 'conference_manus_jobs', params={'id': 'eq.' + jid}, json={
-                    'status': 'completed',
-                    'result': {'evidence': []},
-                    'credits_used': 0,
-                    'completed_at': utc_now(),
-                    'reason': 'claude_verification_timeout_abandoned'
-                })
-                processed += 1
-                continue
-            raise
-
-        if evidence:
-            result = {'evidence': evidence}
-            LOG.info('Claude successfully extracted %d verified fields for %s', len(evidence), event_title)
-            db.request('PATCH', 'conference_manus_jobs', params={'id': 'eq.' + jid}, json={
-                'status': 'completed',
-                'result': result,
-                'credits_used': 0,
-                'completed_at': utc_now(),
-                'reason': 'claude_resolved'
-            })
-            job['payload'] = payload
-            wake_consumers(db, job)
-            processed += 1
-        else:
-            LOG.info('Claude found no verifiable evidence for %s on %s', event_title, url)
-            db.request('PATCH', 'conference_manus_jobs', params={'id': 'eq.' + jid}, json={
-                'status': 'completed',
-                'result': {'evidence': []},
-                'credits_used': 0,
-                'completed_at': utc_now(),
-                'reason': 'claude_no_supported_evidence'
-            })
-            processed += 1
-
-    return processed
-
-def process_pending_events(db: Client, claude: ClaudeClient, limit: int = 10) -> int:
-    """Directly enrich events in pending_review that have missing attributes."""
-    enriched = 0
-    try:
-        events = db.request('GET', 'events', params={
-            'status': 'eq.pending_review',
-            'select': 'id,slug,name,external_url,country,city,venue,format,price_from,attendees,cover_url,start_date,end_date,metadata_report',
-            'order': 'created_at.desc',
-            'limit': str(limit)
-        })
-    except Exception as exc:
-        LOG.warning('Could not query pending events: %s', exc)
-        return 0
-
-    for ev in events:
-        missing = []
-        if not ev.get('country'): missing.append('country')
-        if not ev.get('city'): missing.append('city')
-        if not ev.get('format'): missing.append('format')
-        if not ev.get('region'): missing.append('region')
-        if not ev.get('venue'): missing.append('venue')
-        if ev.get('price_from') is None: missing.append('price_from')
-        if not ev.get('attendees'): missing.append('attendees')
-
-        url = ev.get('external_url')
-        if not missing or not url:
-            continue
-
-        LOG.info('Claude enriching event %s (missing: %s)', ev.get('name'), missing)
-        html = fetch_page(url)
-        if not html:
-            LOG.warning('Destination URL unreachable for %s (%s); archiving event', ev.get('name'), url)
-            meta = ev.get('metadata_report') or {}
-            try:
-                db.request('PATCH', 'events', params={'id': 'eq.' + ev['id']}, json={
-                    'status': 'archived',
-                    'metadata_report': {**meta, 'archive_reason': f'Destination URL unreachable: {url}'}
-                })
-            except Exception as exc:
-                LOG.warning('Failed to archive unreachable event %s: %s', ev['id'], exc)
-            continue
-
-        text = clean_page_text(html)
-
-        # Check event scope (conferences, expos, and trade shows only)
-        classification, is_in_scope = classify_event(ev.get('name', ''), text)
-        if not is_in_scope:
-            LOG.info('Event %s is out of scope (classified as %s); auto-rejecting and archiving', ev.get('name'), classification)
-            meta = ev.get('metadata_report') or {}
-            try:
-                db.request('PATCH', 'events', params={'id': 'eq.' + ev['id']}, json={
-                    'status': 'archived',
-                    'metadata_report': {
-                        **meta,
-                        'rejected_classification': classification,
-                        'archive_reason': f'Out of scope: Event classified as {classification} (CrowdStage only admits conferences, expos, and trade shows)'
-                    }
-                })
-            except Exception as exc:
-                LOG.warning('Failed to archive out-of-scope event %s: %s', ev['id'], exc)
-            continue
-
+            kind, in_scope = classify_event(event['name'])
+            issue = scope_issue(event['name']) or (None if in_scope else f"Out-of-scope event kind ({kind}); only conferences, expos, and trade shows are admitted")
+            if issue:
+                outcome='review';report={'reason':issue,'classification':kind}
+            else:
+                missing=[f for f in ('format','region') if not event.get(f)]
+                if not event.get('vertical_slug'):missing.append('industry_research')
+                if missing:missing += [f for f in ('country','city','venue') if not event.get(f)]
+                # Optional unknown price/attendance do not block publication or
+                # trigger endless paid requests after required facts are complete.
+                if missing:
+                    url,text,digest,body=read_page(event['external_url'])
+                    from .metadata import infer
+                    deterministic=infer(body,url,event['name'],event,single_event=False)
+                    for field in ('country','region','format'):
+                        if field in missing and deterministic['fields'].get(field):
+                            value=deterministic['fields'][field]
+                            patch[field]='in-person' if value=='in_person' else 'virtual' if value=='online' else value
+                    missing=[f for f in missing if f not in patch]
+                    evidence=[]
+                    if missing:evidence,_=claude.research_fields(event['name'],url,missing,text)
+                    fields,proof,warnings=normalize_evidence(evidence,text,event['name'],url,{**event,**patch})
+                    patch.update(fields)
+                    report={'evidence':proof,'warnings':warnings,'page_url':url,'snapshot_sha256':digest,'method':'quoted_organizer_page'}
+                    for field in patch:
+                        if field not in report['evidence'] and field in deterministic.get('evidence',{}):report['evidence'][field]=deterministic['evidence'][field]
+        except DatabaseError:raise
+        except Exception as exc:
+            outcome='retry';error=str(exc)[:500];fatal=retryable_provider(exc)
+            report={'reason':'Page or enrichment temporarily unavailable; event preserved in Pending Review'}
         try:
-            evidence, _ = claude.research_fields(ev.get('name', 'Conference'), url, missing, text)
-        except RuntimeError as exc:
-            if 'verification_timeout_abandoned' in str(exc):
-                LOG.warning('Claude event verification abandoned for %s: time threshold exceeded; archiving', ev.get('name'))
-                meta = ev.get('metadata_report') or {}
-                try:
-                    db.request('PATCH', 'events', params={'id': 'eq.' + ev['id']}, json={
-                        'status': 'archived',
-                        'metadata_report': {**meta, 'archive_reason': 'Claude verification timeout exceeded; cannot validate organizer evidence'}
-                    })
-                except Exception as ex:
-                    LOG.warning('Failed to archive timed out event %s: %s', ev['id'], ex)
-                continue
+            result=db.request('POST','rpc/finish_conference_event_enrichment',json={'p_id':job['id'],'p_claim':job['claim_token'],'p_patch':patch,'p_report':report,'p_outcome':outcome,'p_error':error})
+        except DatabaseError as exc:
+            if 'Enrichment claim is no longer active' in str(exc) or 'Enrichment lease expired' in str(exc):
+                LOG.info('Event changed or its claim expired during work; preserving the current admin decision');continue
             raise
-
-        if evidence:
-            patch = {}
-            meta = ev.get('metadata_report') or {}
-            existing_evidence = meta.get('evidence') or {}
-
-            for item in evidence:
-                field = item.get('field')
-                val = item.get('value')
-                if field and val and field in missing:
-                    if field == 'price_from':
-                        raw_p = str(val).lower()
-                        if 'free' in raw_p or 'complimentary' in raw_p or 'no cost' in raw_p or raw_p == '0':
-                            patch['price_from'] = 0.0
-                        else:
-                            m = re.search(r'[\$€£]?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)', str(val))
-                            if m: patch['price_from'] = float(m.group(1).replace(',', ''))
-                    elif field == 'attendees':
-                        m = re.search(r'([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{2,7})', str(val))
-                        if m:
-                            n = int(m.group(1).replace(',', ''))
-                            if 10 <= n <= 500000: patch['attendees'] = n
-                    else:
-                        patch[field] = val
-
-                    existing_evidence[field] = {
-                        'value': patch.get(field, val),
-                        'method': 'claude_core_brain',
-                        'confidence': 'high',
-                        'page_url': url,
-                        'text': item.get('quote')
-                    }
-
-            if patch:
-                # Update classification to verified in-scope kind (conference, expo, trade-show, summit)
-                patch['kind'] = classification
-
-                # Format normalization
-                if patch.get('format') == 'in_person':
-                    patch['format'] = 'in-person'
-
-                # Auto-derive macro region from country if missing
-                c_val = patch.get('country') or ev.get('country')
-                if c_val and not patch.get('region') and not ev.get('region'):
-                    from .metadata import region_for
-                    derived_region = region_for(c_val)
-                    if derived_region:
-                        patch['region'] = derived_region
-                        existing_evidence['region'] = {
-                            'value': derived_region,
-                            'method': 'country_macro_mapping',
-                            'confidence': 'high',
-                            'page_url': url,
-                            'text': f'Derived from country {c_val}'
-                        }
-
-                # Auto-publish if required minimum criteria (format & region) are fulfilled; otherwise archive
-                final_format = patch.get('format') or ev.get('format')
-                final_region = patch.get('region') or ev.get('region')
-                if final_format and final_region and final_format in ('in-person', 'hybrid', 'virtual'):
-                    patch['status'] = 'published'
-                else:
-                    patch['status'] = 'archived'
-                    existing_evidence['unresolved_reason'] = f'Cannot establish required publication attributes (format={final_format}, region={final_region})'
-
-                patch['metadata_report'] = {**meta, 'evidence': existing_evidence}
-                try:
-                    db.request('PATCH', 'events', params={'id': 'eq.' + ev['id']}, json=patch)
-                    LOG.info('Enriched %s with %s (status=%s)', ev.get('name'), list(patch.keys()), patch.get('status', ev.get('status')))
-                    enriched += 1
-                except Exception as exc:
-                    LOG.warning('Failed to patch event %s: %s', ev['id'], exc)
-        else:
-            LOG.info('No verifiable evidence found for %s; archiving event', ev.get('name'))
-            meta = ev.get('metadata_report') or {}
-            try:
-                db.request('PATCH', 'events', params={'id': 'eq.' + ev['id']}, json={
-                    'status': 'archived',
-                    'metadata_report': {**meta, 'archive_reason': 'No verifiable conference evidence found by Claude core brain'}
-                })
-            except Exception as exc:
-                LOG.warning('Failed to archive unverified event %s: %s', ev['id'], exc)
-
-    return enriched
+        LOG.info('Event %s: %s',event['id'],json.dumps(result))
+        if outcome=='completed':count+=1
+        if fatal:raise RuntimeError(error)
+    return count
 
 def main():
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s [%(name)s] %(message)s')
-    if not claude_configured():
-        LOG.info('Claude enrichment is not configured (missing ANTHROPIC_API_KEY). Skipping.')
-        return
-
-    db = Client()
-    claude = ClaudeClient()
-    LOG.info('Starting Claude Core Brain Worker with model %s', claude.model)
-
+    logging.basicConfig(level=logging.INFO)
+    db=Client();controls=configuration(db,'claude')
+    if not controls['can_run']:
+        LOG.info('Claude is paused by admin control');return
+    if not configured():raise RuntimeError('Claude credential is not configured')
+    claude=ClaudeClient();deadline=time.monotonic()+420
     try:
-        q_count = process_manus_queue(db, claude, limit=5)
-        ev_count = process_pending_events(db, claude, limit=8)
-        LOG.info('Claude Core Brain finished: resolved %d queued jobs, enriched %d events.', q_count, ev_count)
-    finally:
-        claude.close()
+        research_limit=min(4,controls['batch_size'])
+        researched=process_research(db,claude,research_limit,deadline)
+        enriched=process_events(db,claude,min(8,max(0,controls['batch_size']-researched)),deadline)
+        LOG.info('Saved %d research jobs and processed %d event jobs',researched,enriched)
+    except Exception as exc:
+        db.request('POST','rpc/record_conference_pipeline_failure',json={'p_pipeline':'claude','p_error':str(exc)[:750]})
+        raise
+    finally:claude.close()
 
-if __name__ == '__main__':
-    main()
+if __name__=='__main__':main()

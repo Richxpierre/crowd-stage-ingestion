@@ -28,7 +28,7 @@ def http_status(exc):
     return int(match[1]) if match else None
 
 def bad_page(page):
-    soup=BeautifulSoup(page.get('html',''),'html.parser')
+    soup=BeautifulSoup(page.get('html') or '','html.parser')
     title=' '.join(n.get_text(' ',strip=True) for n in soup.select('title,h1'))
     text=soup.get_text(' ',strip=True)[:2000]
     if re.search(r'page not found|404 not found|access denied|just a moment|verify you are human|domain (?:is )?for sale|website (?:is )?parked',title+' '+text[:500],re.I):return True
@@ -36,11 +36,22 @@ def bad_page(page):
         for node in soup.select('script,style,noscript,#blazor-error-ui,[hidden],[aria-hidden="true"]'):node.decompose()
         content=(soup.body or soup).get_text(' ',strip=True)
         if len(content)<80:return True
-    return len(text.strip())<30 and not list(event_nodes(page.get('html','').encode()))
+    return len(text.strip())<30 and not list(event_nodes((page.get('html') or '').encode()))
 
 
 def ancillary_event_url(url):
-    return bool(re.search(r'/(?:sessions?|speakers?|speaking|talks?|agenda|schedule|team-member)(?:/|$)|/veranstaltung-\d+-|[?&](?:session|speaker|talk)(?:id|_id)?=',url,re.I))
+    return bool(re.search(r'/(?:sessions?|speakers?|speaking|talks?|tracks?|training|courses?|agenda|schedule|team-member)(?:/|$)|/veranstaltung-\d+-|[?&](?:session|speaker|talk)(?:id|_id)?=',str(url or ''),re.I))
+
+def specific_event_title(title):
+    value=re.sub(r'[^\w]+',' ',str(title or '')).strip().casefold()
+    if value in {'conference','conferences','event','events','upcoming events','our upcoming events','prossimo evento','event calendar','calendar','home','welcome','tickets','register','registration','visit website','event details'}:return False
+    if re.search(r'^(?:the )?next edition|^the (?:next )?conference will|^our upcoming',value):return False
+    from .enrichment_values import scope_issue
+    return len(value)>=3 and scope_issue(str(title or '')) is None
+
+def title_edition_conflict(title,start_date):
+    years=set(re.findall(r'(?<!\d)20\d{2}(?!\d)',str(title or '')))
+    return bool(years and str(start_date)[:4] not in years)
 
 
 def unrelated_page_event(page,records):
@@ -53,7 +64,7 @@ def unrelated_page_event(page,records):
     for record in records:
         target=record.get('event_url') or page['url']
         if clean_url(target).rstrip('/')==clean_url(page['url']).rstrip('/') or not same_owner(target,page['url']):return None
-        title_tokens=set(re.findall(r'[^\W\d_]{3,}',record.get('title','').casefold()))-{'conference','event','the','and','online'}
+        title_tokens=set(re.findall(r'[^\W\d_]{3,}',str(record.get('title') or '').casefold()))-{'conference','event','the','and','online'}
         if not title_tokens or heading_tokens & title_tokens:return None
         targets.add(target)
     return next(iter(targets)) if len(targets)==1 else None
@@ -142,6 +153,7 @@ async def _validate_site(candidate,reader,search):
     async def read(url):
         try:
             page=await reader.read(url)
+            if not isinstance(page.get('html'),str):raise ValueError('Website returned no usable page markup')
             if bad_page(page):
                 if re.search(r'404|page not found',page.get('html','')[:2000],re.I):raise RuntimeError('HTTP 404: page-not-found content')
                 if re.search(r'domain (?:is )?for sale|website (?:is )?parked',page.get('html','')[:2000],re.I):raise ValueError('Domain is parked or for sale')
@@ -252,9 +264,26 @@ async def _validate_site(candidate,reader,search):
                     if len(expected)!=1 or proposed!=expected:config['selectors'].pop(field)
             extracted=(extract_pass(kind,{u:pages[u] for u in config['page_urls']},source,config,snapshot_cache=snapshot_cache)[:50]
                        if config['selectors'] else [r for r in initial if r['evidence']['page_url'] in config['page_urls']])
-            extracted=add_research(kind,pages,source,extracted,research)
+            # Explicit admin edition recipes retain their exact-text guards.
+            # They are still evaluated against this run's fresh organizer page.
+            reviewed=(candidate.get('parse_settings') or {}).get('parse_passes',{}).get(kind,{})
+            manual_recipe=bool((candidate.get('evidence') or {}).get('admin_reviewed') and reviewed.get('verified_events'))
+            if manual_recipe:
+                config={**reviewed,'enabled':True,'require_verified':True}
+                targets=config.get('page_urls') or list(pages)[:3]
+                from .parse_passes import canonical_page
+                for target in targets[:3]:
+                    if not any(canonical_page(u)==canonical_page(target) for u in pages) and same_owner(target,canonical) and len(pages)<8:
+                        try:
+                            page=await read(target)
+                            if same_owner(page['url'],canonical):pages[page['url']]=page['html'].encode()
+                        except Exception as exc:audit['errors'].append({'stage':'reviewed_page','url':target,'message':str(exc)[:500]})
+                resolved=[u for u in pages if any(canonical_page(u)==canonical_page(target) for target in targets)]
+                extracted=extract_pass(kind,{u:pages[u] for u in resolved},source,config,snapshot_cache=snapshot_cache)[:50]
+                config['page_urls']=resolved
+            if not manual_recipe:extracted=add_research(kind,pages,source,extracted,research)
             config['page_urls']=list(dict.fromkeys(config['page_urls']+[r['evidence']['page_url'] for r in extracted]))[:5]
-            extracted,config=await asyncio.to_thread(enrich_pass,kind,{u:pages[u] for u in config['page_urls']},source,config,extracted,ai)
+            if not manual_recipe:extracted,config=await asyncio.to_thread(enrich_pass,kind,{u:pages[u] for u in config['page_urls']},source,config,extracted,ai)
             plan[kind]=config
             results[kind]={'status':'success' if extracted else 'missing','results':extracted,'errors':[]}
         assembled=assemble(results,source)
@@ -264,13 +293,13 @@ async def _validate_site(candidate,reader,search):
             if research:ai.audit['research']={k:research.get(k) for k in ('id','status','reason')}
         except Exception:ai.audit['research']={'status':'unavailable'}
         audit['ai_enrichment']=ai.audit
-        current=[r for r in assembled if r['end_date']>=today and int(r['start_date'][:4])<=date.today().year+2 and r.get('status')!='cancelled']
+        current=[r for r in assembled if r['end_date']>=today and int(r['start_date'][:4])<=date.today().year+2 and r.get('status')!='cancelled' and specific_event_title(r.get('title')) and not title_edition_conflict(r.get('title'),r['start_date'])]
         date_conflicts=visible_date_conflicts(first['html'].encode(),current) if current else []
         if date_conflicts:audit['structured_date_conflicts']=date_conflicts
         audit.update(event_evidence=[{'title':r['title'],'start_date':r['start_date'],'end_date':r['end_date'],'url':r['event_url'],'page_url':r['source_url']} for r in current][:20],
                      pass_results=results,search_matches=search_matches)
         audit['past_events']=[{'title':r['title'],'start_date':r['start_date'],'end_date':r['end_date']} for r in raw if r['end_date']<today][:5]
-        outcome['parse_settings']={'website_only':True,'render':True,'max_pages':8,'single_event':single,'parse_passes':plan,'ai_enrichment':ai.audit}
+        outcome['parse_settings']={'website_only':True,'render':True,'browser_fallback':True,'max_pages':8,'single_event':single,'parse_passes':plan,'ai_enrichment':ai.audit}
         critical={'city','country','region','venue'}
         optional=sorted({field for r in current for field in r.get('extraction',{}).get('conflicting_fields',[]) if field not in critical})
         audit['warnings']=([{'code':'optional_conflicts','fields':optional,'message':'Conflicting optional values stay unknown; they do not invalidate the website.'}] if optional else [])
@@ -333,13 +362,18 @@ def worker_failure(candidate,exc):
 async def run(limit=5,validation_id=None,dry_run=False):
     from .client import Client
     db=Client()
+    from .pipeline_control import configuration
+    controls=configuration(db,'validation')
+    if not controls['can_run']:return
+    limit=min(limit,controls['batch_size'])
     worker_deadline=time.monotonic()+max(180,min(int(os.environ.get('VALIDATION_BATCH_SECONDS','600')),900))
     async with Crawl4AIReader(os.environ.get('COLLECTOR_USER_AGENT',''),deadline=worker_deadline) as reader:
       for _ in range(max(1,min(limit,50))):
+        if not configuration(db,'validation')['can_run']:break
         if time.monotonic()>=worker_deadline-15:break
         candidate=db.request('POST','rpc/claim_conference_source_validation',json={'p_id':validation_id})
         if not candidate:break
-        deadline=min(worker_deadline,time.monotonic()+180)
+        deadline=min(worker_deadline,time.monotonic()+min(180,controls['item_timeout_seconds']))
         reader.deadline=deadline
         try:
             try:search=SearXNG(deadline=deadline)

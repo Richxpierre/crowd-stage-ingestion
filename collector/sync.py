@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 from .client import Client
+from .pipeline_control import configuration
 from .fetch import Fetcher
 from .parsers import _finish, clean_url
 from .images import enrich_missing_images
@@ -40,8 +41,16 @@ def next_check(source, hours_override=None):
 
 
 def is_directory_target(url):
+    from .discovery import excluded
     host = (urlsplit(url).hostname or '').lower().removeprefix('www.')
-    return any(host == blocked or host.endswith('.' + blocked) for blocked in BLOCKED_DIRECTORY_HOSTS)
+    return excluded(url) or any(host == blocked or host.endswith('.' + blocked) for blocked in BLOCKED_DIRECTORY_HOSTS)
+
+def in_scope_record(record,source_url):
+    from .source_validation import specific_event_title,title_edition_conflict,ancillary_event_url
+    from .parse_passes import canonical_page
+    if not specific_event_title(record.get('title')) or title_edition_conflict(record.get('title'),record.get('start_date')):return False
+    target=record.get('event_url') or source_url
+    return not (ancillary_event_url(target) and canonical_page(target)!=canonical_page(source_url))
 
 
 def preserve_existing_identity(db, source, records):
@@ -50,13 +59,23 @@ def preserve_existing_identity(db, source, records):
     This also adopts identities written by the older title-based parser, avoiding
     duplicate records when a source upgrades to the new parser.
     """
-    if len(records) != 1 or not source.get('selectors', {}).get('single_event'):
+    selectors=source.get('selectors', {})
+    choice=selectors.get('identity_choice') or {}
+    if len(records)>1 and selectors.get('single_event') and choice:
+        signatures={(clean_url(r.get('event_url')),r.get('start_date'),r.get('end_date'),str(r.get('title','')).casefold().strip()) for r in records}
+        if len(signatures)==1 and all(str(r.get('start_date',''))[:4]==choice.get('edition') and clean_url(r.get('event_url'))==clean_url(choice.get('event_url')) for r in records):
+            records=[next((r for r in records if r.get('source_record_id')==choice.get('source_record_id')),records[0])]
+    if len(records) != 1 or not selectors.get('single_event'):
         return records
     record = records[0]
     matches = [obs for obs in db.observations(source['id'])
                if clean_url(obs['payload'].get('event_url')) == clean_url(record.get('event_url'))
                and str(obs['payload'].get('start_date',''))[:4] == record['start_date'][:4]]
     identities = {obs['source_record_id'] for obs in matches}
+    if choice.get('edition')==record['start_date'][:4] and clean_url(choice.get('event_url'))==clean_url(record.get('event_url')):
+        selected=choice.get('source_record_id')
+        if selected not in identities:raise ValueError('Reviewed identity choice no longer matches a stored edition observation')
+        return [_finish(record,source['publisher'],selected)]
     if len(identities) > 1:
         raise ValueError('Ambiguous event identities on a dedicated source; review duplicates first')
     if identities:
@@ -89,6 +108,7 @@ def sync_one(db, source, selected_passes=None, parse_only=False, run_id=None):
             passes,report=collect_passes(fetcher,source,selected_passes,
                 on_result=lambda kind,result:db.save_parse_pass(run_id,sid,kind,result))
             records=assemble(passes,source)
+            if records:records=preserve_existing_identity(db,source,records)
             for kind,result in passes.items():db.save_parse_pass(run_id,sid,kind,result)
             if records:records=retain_known_optional(records,db.observations(sid),source['publisher'])
             report['events_found']=len(records)
@@ -109,7 +129,7 @@ def sync_one(db, source, selected_passes=None, parse_only=False, run_id=None):
             records,code,headers,report=collect_source(fetcher,source)
         if code == 304:
             db.update_source(sid, {'last_success_at':utc_now(),'last_attempt_at':utc_now(),
-                                   'last_error':None,'next_check_at':next_check(source)})
+                                   'last_error':None,'next_check_at':next_check(source),'retry_failures':0,'review_hold':False})
             db.update_run(run_id, {'status':'unchanged','completed_at':utc_now(),'http_status':304})
             return counts
         recovered=report.get('mode')=='website_fallback'
@@ -119,6 +139,12 @@ def sync_one(db, source, selected_passes=None, parse_only=False, run_id=None):
         current_records = [r for r in records if r['end_date'] >= current_date or r.get('status') == 'cancelled']
         counts['skipped_count'] = len(records) - len(current_records)
         records = current_records
+        excluded_scope=[r for r in records if r.get('status')!='cancelled' and not in_scope_record(r,source['url'])]
+        if excluded_scope:
+            report['scope_exclusions']=[{'title':r.get('title'),'url':r.get('event_url')} for r in excluded_scope[:20]]
+            records=[r for r in records if r not in excluded_scope]
+            counts['skipped_count']+=len(excluded_scope)
+            if not records:raise ValueError('No standalone conferences remain after excluding calendar administration, sessions and unsupported edition labels')
         if source['kind'] != 'auto' and not recovered:
             fetcher.deadline=min(getattr(fetcher,'deadline',None) or float('inf'),time.monotonic()+60)
             records=enrich_missing_images(fetcher,source,records)
@@ -152,7 +178,7 @@ def sync_one(db, source, selected_passes=None, parse_only=False, run_id=None):
         db.update_source(sid, {'etag':headers.get('ETag'), 'last_modified':headers.get('Last-Modified'),
                               'discovery_report':image_report,
                               'last_success_at':utc_now(), 'last_attempt_at':utc_now(),
-                              'next_check_at':next_check(source,6 if recovered else None),'last_error':None})
+                              'next_check_at':next_check(source,6 if recovered else None),'last_error':None,'retry_failures':0,'review_hold':False})
         if recovered:
             LOG.warning('Source %s recovered with automatic website discovery at %s; primary feed/page will be retried',source.get('slug'),report['fallback_url'])
         db.update_run(run_id, {**counts, 'status':'success' if records else 'unchanged','http_status':code,'completed_at':utc_now()})
@@ -161,10 +187,19 @@ def sync_one(db, source, selected_passes=None, parse_only=False, run_id=None):
         LOG.exception('Source %s failed',source.get('slug'))
         db.update_run(run_id,{**counts,'status':'failed','completed_at':utc_now(),'error_message':str(exc)[:750]})
         failed={'last_attempt_at':utc_now(), 'last_error':str(exc)[:750],'next_check_at':next_check(source,6)}
+        if isinstance(db,Client):
+            from .client import DatabaseError
+            db.source_failure(sid,str(exc)[:750],not isinstance(exc,DatabaseError))
+            failed.pop('next_check_at',None)
         failure_report=getattr(exc,'report',None) or report
         if failure_report is not None:failed['discovery_report']=failure_report
         db.update_source(sid,failed)
         raise
+
+
+def source_budget_available(deadline, seconds, now=None):
+    """Defer work rather than manufacture a timeout from the batch's final seconds."""
+    return deadline-(time.monotonic() if now is None else now)>=min(600,max(1,float(seconds)))+10
 
 
 def main():
@@ -176,7 +211,15 @@ def main():
     if args.parse_only and not args.slug:parser.error('--parse-only requires a specific --slug')
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
     db = Client()
+    controls=configuration(db,'parsing')
+    if not controls['can_run']:
+        LOG.info('Parsing is paused by admin control; no sources claimed');return
+    args.limit_sources=min(args.limit_sources,int(controls['batch_size']))
+    os.environ['MAX_SOURCE_SECONDS']=str(controls['item_timeout_seconds'])
     def execute(source, selected=None, preview=False):
+        current=configuration(db,'parsing')
+        if not current['can_run']:raise KeyboardInterrupt('Parsing paused by administrator')
+        os.environ['MAX_SOURCE_SECONDS']=str(current['item_timeout_seconds'])
         if os.environ.get('SOURCE_PROCESS_ISOLATION') == '1':
             from .source_process import run_source
             remaining = max(1, run_deadline - time.monotonic())
@@ -186,9 +229,9 @@ def main():
     # Manual pass requests share the same guarded worker and approval rules.
     # A focused request never enables a paused/unapproved source.
     handled=set()
-    run_deadline=time.monotonic()+max(150,min(int(os.environ.get('MAX_RUN_SECONDS','600')),1800))
+    run_deadline=time.monotonic()+max(min(600,float(os.environ['MAX_SOURCE_SECONDS']))+10,150,min(int(os.environ.get('MAX_RUN_SECONDS','600')),1800))
     for _ in range(0 if args.slug else min(50,max(1,int(os.environ.get('MAX_PARSE_REQUESTS','20'))))):
-        if time.monotonic()>=run_deadline-30:break
+        if not source_budget_available(run_deadline,os.environ['MAX_SOURCE_SECONDS']):break
         request=db.claim_parse_request()
         if not request:break
         handled.add(request['source_id'])
@@ -203,7 +246,7 @@ def main():
     LOG.info('%d direct sources selected',len(sources))
     failures = 0; fatal = False
     for index,s in enumerate(sources):
-        if time.monotonic()>=run_deadline:
+        if not source_budget_available(run_deadline,os.environ['MAX_SOURCE_SECONDS']):
             LOG.warning('Run time budget reached; %d due sources deferred to the next scheduled run',len(sources)-index)
             break
         try:
@@ -223,4 +266,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
