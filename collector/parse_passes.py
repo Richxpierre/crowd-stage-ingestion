@@ -20,10 +20,10 @@ from urllib.parse import urlsplit,urlunsplit
 
 PASS_TYPES = ('event_date', 'event_stats', 'event_location', 'event_details')
 FIELDS = {
-    'event_date': ('start_date','end_date','timezone','status'),
-    'event_stats': ('price_from','price_currency','attendees','exhibitors','format'),
-    'event_location': ('venue','city','region','country'),
-    'event_details': ('industry_text','industry_research','event_kind','summary','categories','cover_url','image_method','image_source_url','registration_url','cfp_url','cfp_deadline'),
+    'event_date': ('start_date','end_date','timezone','starts_at','ends_at','status'),
+    'event_stats': ('price_from','price_currency','attendees','exhibitors','capacity','format'),
+    'event_location': ('venue','city','region','country','venue_details'),
+    'event_details': ('industry_text','industry_research','event_kind','summary','categories','cover_url','image_method','image_source_url','registration_url','registration_deadline','cfp_url','cfp_deadline','sponsorship_url','sponsorship_deadline','sponsors','organizer','industries'),
 }
 
 def now(): return datetime.now(timezone.utc).isoformat()
@@ -55,7 +55,8 @@ def number(value, integer=False):
 def node_fields(kind, node, body, url, source):
     if kind == 'event_location':
         venue,city,region,country = _extract_location(node.get('location'))
-        return nonempty(dict(venue=venue,city=city,region=region,country=country))
+        from .event_data import schema_location
+        return nonempty(dict(venue=venue,city=city,region=region,country=country,**schema_location(node)))
     if kind == 'event_stats':
         attendance = str(node.get('eventAttendanceMode',''))
         fmt = next((value for key,value in [('Mixed','hybrid'),('Offline','in_person'),('Online','online')]
@@ -68,12 +69,14 @@ def node_fields(kind, node, body, url, source):
         prices=[p for p in prices if p[0] is not None and p[1]]
         price=min(prices) if prices and len({p[1] for p in prices})==1 else (None,None)
         return nonempty(dict(format=fmt,price_from=price[0],price_currency=price[1],
-                             attendees=number(node.get('attendeeCount'),True),exhibitors=number(node.get('exhibitorCount'),True)))
+                             attendees=number(node.get('attendeeCount'),True),exhibitors=number(node.get('exhibitorCount'),True),capacity=number(node.get('maximumAttendeeCapacity'),True)))
     if kind == 'event_details':
         tags=node.get('keywords') or []
         if isinstance(tags,str): tags=re.split(r'[,;]',tags)
         if not isinstance(tags,list): tags=[]
         result=nonempty(dict(summary=plain(node.get('description'),1200),categories=[plain(x,60) for x in tags if isinstance(x,str)][:15]))
+        from .event_data import schema_details
+        result.update(schema_details(node,url))
         result.update(choose_image(body,url,event_image=node.get('image'),selectors=source.get('selectors')))
         offers=node.get('offers') or []
         if isinstance(offers,dict): offers=[offers]
@@ -97,7 +100,7 @@ def overrides(kind, body, config, url):
         value=node.get('datetime') or node.get('content') or node.get_text(' ',strip=True)
         if field.endswith('_url'):
             value=clean_url(urljoin(url,node.get('href') or node.get('src') or value))
-        elif field in ('start_date','end_date','cfp_deadline'):
+        elif field in ('start_date','end_date') or field.endswith('_deadline'):
             span=date_range(value);value=span[0 if field!='end_date' else 1] if span else date_part(value)
         elif field in ('attendees','exhibitors','price_from'): value=number(value,field!='price_from')
         elif field=='categories': value=[x.strip()[:60] for x in re.split(r'[,;]',value) if x.strip()][:15]
@@ -275,6 +278,9 @@ def extract_pass(kind, pages, source, config, on_page=None, snapshot_cache=None)
         if kind=='event_details' and (source.get('selectors') or {}).get('single_event'):
             image=choose_image(body,url,selectors=source.get('selectors'))
             add(source['name'],None,image,'page_image',source['url'])
+            from .event_data import html_sponsors
+            sponsors=html_sponsors(body,url,source.get('selectors')) if len(nodes)<=1 and not any(n.get('sponsor') or n.get('funder') for n in nodes) else []
+            if sponsors:add(source['name'],None,{'sponsors':sponsors},'event_html_sponsors',source['url'])
         verified=verified_event_values(kind,body,config,url)
         if config.get('reviewed_only') or kind=='event_date' and config.get('require_verified') and verified:
             # Reviewed-only pages can contain parent conferences, sessions or training.
@@ -512,3 +518,4 @@ def retain_known_optional(records, observations, publisher):
         record['extraction']['retained_previous_fields']=retained
         _finish(record,publisher,record['source_record_id'])
     return records
+
