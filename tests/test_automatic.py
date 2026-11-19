@@ -91,7 +91,9 @@ class AutomaticTests(unittest.TestCase):
             def __init__(self,*args,**kwargs):pass
             def fetch(self,url):return 200,CARDS,{}
         db=FakeDB()
-        with patch('collector.sync.Fetcher',Fetcher):
+        from datetime import datetime, timezone
+        with patch('collector.sync.Fetcher',Fetcher), patch('collector.sync.datetime') as clock:
+            clock.now.return_value = datetime(2026, 11, 1, tzinfo=timezone.utc)
             result=sync_one(db,{**AUTO,'selectors':{'max_pages':1,'render':False}})
         self.assertEqual(result['created_count'],2)
         self.assertTrue(any('discovery_report' in change for change in db.sources))

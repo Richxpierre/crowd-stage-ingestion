@@ -17,6 +17,29 @@ from .manus_queue import wake_consumers
 
 LOG = logging.getLogger('crowdstage-claude-worker')
 
+def classify_event(title: str, text: str = '') -> tuple[str, bool]:
+    """Classify event into kind and determine if in scope (conference, expo, trade-show, summit)."""
+    combined = f'{title} {text[:1000]}'.lower()
+    if re.search(r'\b(webinar|online seminar|webcast|zoom session)\b', combined):
+        return ('webinar', False)
+    if re.search(r'\b(meetup|user group|networking drink|social gathering|local chapter meeting)\b', combined):
+        return ('meetup', False)
+    if re.search(r'\b(workshop|masterclass|bootcamp|hands-on lab|training course|lecture series)\b', combined):
+        return ('workshop', False)
+    if re.search(r'\b(hackathon|codeathon|game jam)\b', combined):
+        return ('hackathon', False)
+    if re.search(r'\b(course|class|curriculum|certification program)\b', combined):
+        return ('course', False)
+    if re.search(r'\b(breakout session|keynote session|individual talk|panel session)\b', combined):
+        return ('session', False)
+    if re.search(r'\btrade[ -]?(?:show|fair)\b', combined):
+        return ('trade-show', True)
+    if re.search(r'\bexpo(?:sition)?\b|\bexhibition\b', combined):
+        return ('expo', True)
+    if re.search(r'\bsummit\b', combined):
+        return ('summit', True)
+    return ('conference', True)
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -179,6 +202,25 @@ def process_pending_events(db: Client, claude: ClaudeClient, limit: int = 10) ->
             continue
 
         text = clean_page_text(html)
+
+        # Check event scope (conferences, expos, and trade shows only)
+        classification, is_in_scope = classify_event(ev.get('name', ''), text)
+        if not is_in_scope:
+            LOG.info('Event %s is out of scope (classified as %s); auto-rejecting and archiving', ev.get('name'), classification)
+            meta = ev.get('metadata_report') or {}
+            try:
+                db.request('PATCH', 'events', params={'id': 'eq.' + ev['id']}, json={
+                    'status': 'archived',
+                    'metadata_report': {
+                        **meta,
+                        'rejected_classification': classification,
+                        'archive_reason': f'Out of scope: Event classified as {classification} (CrowdStage only admits conferences, expos, and trade shows)'
+                    }
+                })
+            except Exception as exc:
+                LOG.warning('Failed to archive out-of-scope event %s: %s', ev['id'], exc)
+            continue
+
         try:
             evidence, _ = claude.research_fields(ev.get('name', 'Conference'), url, missing, text)
         except RuntimeError as exc:
@@ -228,6 +270,9 @@ def process_pending_events(db: Client, claude: ClaudeClient, limit: int = 10) ->
                     }
 
             if patch:
+                # Update classification to verified in-scope kind (conference, expo, trade-show, summit)
+                patch['kind'] = classification
+
                 # Format normalization
                 if patch.get('format') == 'in_person':
                     patch['format'] = 'in-person'

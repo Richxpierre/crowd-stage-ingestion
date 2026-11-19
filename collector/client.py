@@ -45,8 +45,12 @@ class Client:
         return self.request('GET', 'conference_sources', params=params)
 
     def create_run(self, source_id):
+        record = {'source_id': source_id, 'status': 'running'}
+        repository, run = os.environ.get('GITHUB_REPOSITORY'), os.environ.get('GITHUB_RUN_ID')
+        if repository and run and run.isdigit():
+            record['worker_run_url'] = f'https://github.com/{repository}/actions/runs/{run}'
         return self.request('POST', 'conference_ingestion_runs', json={
-            'source_id': source_id, 'status': 'running'
+            **record
         }, headers={'Prefer':'return=representation'})[0]['id']
 
     def observations(self, source_id):

@@ -40,6 +40,8 @@ jobs:
       CLAUDE_ENRICHMENT_ENABLED: ${{ vars.CLAUDE_ENRICHMENT_ENABLED }}
       MAX_SOURCES: '15'
       MAX_RUN_SECONDS: '600'
+      SOURCE_PROCESS_ISOLATION: '1'
+      MAX_SOURCE_SECONDS: '300'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -134,5 +136,8 @@ jobs:
             python -m collector.sync
           fi
 
+      - name: Close incomplete source attempts from this execution
+        if: always() && steps.precheck.outputs.has_work == 'true'
+        run: python -m collector.source_process
       - if: always() && steps.precheck.outputs.has_work == 'true'
         run: docker rm -f crowdstage-search || true

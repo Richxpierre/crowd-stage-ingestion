@@ -69,6 +69,22 @@ class ClaudeEnrichmentTests(unittest.TestCase):
             self.assertEqual(evidence[0]['field'], 'country')
             self.assertEqual(evidence[0]['value'], 'Germany')
 
+    def test_classify_event(self):
+        from collector.claude_worker import classify_event
+        # In scope
+        self.assertEqual(classify_event('World AI Conference 2026'), ('conference', True))
+        self.assertEqual(classify_event('European Manufacturing Expo 2027'), ('expo', True))
+        self.assertEqual(classify_event('Global Automotive Trade Show'), ('trade-show', True))
+        self.assertEqual(classify_event('Global Cloud Summit 2026'), ('summit', True))
+
+        # Out of scope
+        self.assertEqual(classify_event('React 19 Deep Dive Online Webinar'), ('webinar', False))
+        self.assertEqual(classify_event('Denver Python User Group Meetup'), ('meetup', False))
+        self.assertEqual(classify_event('Hands-on Kubernetes Workshop'), ('workshop', False))
+        self.assertEqual(classify_event('Global Web3 Hackathon 2026'), ('hackathon', False))
+        self.assertEqual(classify_event('Data Engineering Certification Course'), ('course', False))
+        self.assertEqual(classify_event('Keynote Breakout Session: Security'), ('session', False))
+
     def test_mini_enricher_with_claude_provider(self):
         def mock_claude_provider(p):
             return {'selections': [{'field': 'country', 'node_id': 0}]}, {'input_tokens': 50, 'output_tokens': 10}
