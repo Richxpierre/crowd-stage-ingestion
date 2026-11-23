@@ -1,6 +1,7 @@
 """Service-only Supabase REST client. Never import this in frontend code."""
 from __future__ import annotations
 import os
+import time
 from datetime import datetime, timezone
 import requests
 
@@ -23,14 +24,33 @@ class Client:
             self.session.headers['Authorization'] = 'Bearer ' + key
 
     def request(self, method, path, **kwargs):
-        try:
-            response = self.session.request(method, self.base + '/' + path, timeout=50, **kwargs)
-        except requests.RequestException:
-            raise DatabaseError(f'Supabase transport failed: {method} {path.split("?")[0]}') from None
-        if not response.ok:
-            raise DatabaseError(f'Supabase {method} {path.split("?")[0]}: {response.status_code} {response.text[:300]}')
-        try:return response.json() if response.content else None
-        except ValueError:raise DatabaseError(f'Supabase returned invalid JSON: {method} {path.split("?")[0]}') from None
+        # Only replay reads and known conflict-key upserts after an uncertain
+        # response. Never replay a claim/create RPC after a transport timeout.
+        method = method.upper()
+        safe_replay = method == 'GET' or (
+            method == 'POST' and path in ('conference_source_parse_results', 'conference_url_candidates')
+            and bool(kwargs.get('params', {}).get('on_conflict')))
+        for attempt in range(3):
+            try:
+                response = self.session.request(method, self.base + '/' + path, timeout=50, **kwargs)
+            except requests.RequestException as error:
+                if attempt < 2 and (safe_replay or isinstance(error, requests.ConnectTimeout)):
+                    time.sleep(2 ** attempt)
+                    continue
+                raise DatabaseError(f'Supabase transport failed: {method} {path.split("?")[0]}') from None
+            if not response.ok:
+                # A Postgres statement cancellation rolls back the transaction,
+                # making one bounded retry safe even for an atomic queue claim.
+                try: cancelled = response.status_code == 500 and response.json().get('code') == '57014'
+                except (ValueError, AttributeError): cancelled = False
+                transient = response.status_code in (429, 502, 503, 504)
+                if attempt < 2 and (cancelled or (safe_replay and transient)):
+                    time.sleep(2 ** attempt)
+                    continue
+                raise DatabaseError(f'Supabase {method} {path.split("?")[0]}: {response.status_code} {response.text[:300]}')
+            try: return response.json() if response.content else None
+            except ValueError:
+                raise DatabaseError(f'Supabase returned invalid JSON: {method} {path.split("?")[0]}') from None
 
     def sources(self, slug=None):
         params = {
