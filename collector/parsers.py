@@ -233,6 +233,10 @@ def parse_jsonld(body: bytes, source: dict, page_url: str | None = None) -> list
                 source_url=page_url,
             )
             from .images import choose_image
+            from .event_data import schema_location,schema_dates,schema_details
+            rec.update(schema_location(node))
+            rec.update(schema_dates(node))
+            rec.update(schema_details(node,page_url))
             rec.update(choose_image(soup,page_url,event_image=node.get('image'),selectors=source.get('selectors')))
             # Prefer @id; otherwise keep annual editions distinct even on evergreen pages.
             # One dedicated official event page per annual edition keeps its identity
@@ -245,4 +249,5 @@ def parse_jsonld(body: bytes, source: dict, page_url: str | None = None) -> list
             except ValueError:
                 continue
     return records
+
 
